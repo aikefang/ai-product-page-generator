@@ -35,7 +35,7 @@ function normalizePreviewConfig(snapshot: unknown): PreviewConfig {
   return {
     heroImageCount: Math.min(5, Math.max(1, Number(previewConfig.heroImageCount ?? 4))),
     detailSectionCount: Math.min(10, Math.max(1, Number(previewConfig.detailSectionCount ?? 6))),
-    imageAspectRatio: previewConfig.imageAspectRatio === "3:4" ? "3:4" : "9:16",
+    imageAspectRatio: previewConfig.imageAspectRatio === "9:16" ? "9:16" : "3:4",
     contentLanguage: normalizeContentLanguage(previewConfig.contentLanguage),
   };
 }
@@ -212,8 +212,8 @@ export function ProjectOutputConfigCard({
                 }))
               }
             >
-              <option value="9:16">9:16</option>
               <option value="3:4">3:4</option>
+              <option value="9:16">9:16</option>
             </select>
           </div>
         </div>

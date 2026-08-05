@@ -144,7 +144,7 @@ function getBulkProgressFromTask(task: PlanningTask, fallbackTotal: number, runn
 const defaultPreviewConfig: PreviewConfig = {
   heroImageCount: 4,
   detailSectionCount: 6,
-  imageAspectRatio: "9:16",
+  imageAspectRatio: "3:4",
   contentLanguage: "zh-CN",
 };
 
@@ -181,7 +181,7 @@ function getPreviewConfig(project: any): PreviewConfig {
       10,
       Math.max(1, Number(config.detailSectionCount ?? defaultPreviewConfig.detailSectionCount)),
     ),
-    imageAspectRatio: config.imageAspectRatio === "3:4" ? "3:4" : defaultPreviewConfig.imageAspectRatio,
+    imageAspectRatio: config.imageAspectRatio === "9:16" ? "9:16" : defaultPreviewConfig.imageAspectRatio,
     contentLanguage: config.contentLanguage ?? defaultPreviewConfig.contentLanguage,
   };
 }

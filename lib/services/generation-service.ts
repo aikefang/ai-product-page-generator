@@ -85,7 +85,7 @@ function getGenerationSettings(project: { modelSnapshot: unknown } | null) {
 
   return {
     allowSvgFallback: settings.allowSvgFallback === true,
-    imageAspectRatio: previewConfig.imageAspectRatio === "3:4" ? "3:4" : "9:16",
+    imageAspectRatio: previewConfig.imageAspectRatio === "9:16" ? "9:16" : "3:4",
     contentLanguage: normalizeContentLanguage(previewConfig.contentLanguage),
   } as {
     allowSvgFallback: boolean;

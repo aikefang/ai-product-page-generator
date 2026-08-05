@@ -52,7 +52,7 @@ type NormalizedSection = {
 const previewConfigSchema = z.object({
   heroImageCount: z.number().int().min(1).max(5),
   detailSectionCount: z.number().int().min(1).max(10),
-  imageAspectRatio: z.enum(["3:4", "9:16"]).default("9:16"),
+  imageAspectRatio: z.enum(["3:4", "9:16"]).default("3:4"),
   contentLanguage: z.enum(contentLanguageOptions).default("zh-CN"),
 });
 
@@ -341,7 +341,7 @@ function readPreviewConfig(snapshot: unknown): PreviewConfigInput {
   return previewConfigSchema.parse({
     heroImageCount: Number((raw as Record<string, unknown> | null)?.heroImageCount ?? 4),
     detailSectionCount: Number((raw as Record<string, unknown> | null)?.detailSectionCount ?? 6),
-    imageAspectRatio: ((raw as Record<string, unknown> | null)?.imageAspectRatio ?? "9:16") as "3:4" | "9:16",
+    imageAspectRatio: ((raw as Record<string, unknown> | null)?.imageAspectRatio ?? "3:4") as "3:4" | "9:16",
     contentLanguage: normalizeContentLanguage((raw as Record<string, unknown> | null)?.contentLanguage),
   });
 }
