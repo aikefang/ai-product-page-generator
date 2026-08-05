@@ -69,7 +69,7 @@ export function ThemeToggle({ collapsed = false }: { collapsed?: boolean }) {
       </span>
       <span
         className={cn(
-          "overflow-hidden whitespace-nowrap text-left text-base transition-[width,opacity,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+          "overflow-hidden whitespace-nowrap text-left transition-[width,opacity,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
           collapsed ? "md:w-0 md:translate-x-0 md:opacity-0" : "md:w-[165px] md:translate-x-0 md:opacity-100",
         )}
       >

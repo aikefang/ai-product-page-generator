@@ -6,7 +6,7 @@ const net = require("net");
 const path = require("path");
 const { spawn } = require("child_process");
 
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, utilityProcess } = require("electron");
 
 const { toSqliteFileUrl } = require("../scripts/runtime-paths.cjs");
 
@@ -205,20 +205,21 @@ async function startNextServer(runtime) {
   const port = await findAvailablePort(3000);
   const env = getRuntimeEnv(runtime, port);
 
-  serverProcess = spawn(process.execPath, [serverEntry], {
+  serverProcess = utilityProcess.fork(serverEntry, [], {
     cwd: getStandaloneRoot(),
-    env: {
-      ...env,
-      ELECTRON_RUN_AS_NODE: "1",
-    },
-    windowsHide: true,
+    env,
     stdio: ["ignore", "pipe", "pipe"],
+    serviceName: "MxPage Local Server",
   });
 
   let serverErrors = "";
 
-  serverProcess.stderr.on("data", (chunk) => {
+  serverProcess.stderr?.on("data", (chunk) => {
     serverErrors += chunk.toString();
+  });
+
+  serverProcess.on("error", (type, location, report) => {
+    serverErrors += `${type} at ${location}\n${report}`;
   });
 
   serverProcess.on("exit", (code) => {
@@ -412,22 +413,28 @@ function createMainWindow(url) {
 }
 
 async function shutdownServerProcess() {
-  if (!serverProcess || serverProcess.killed) {
+  if (!serverProcess || typeof serverProcess.pid !== "number") {
     return;
   }
 
   await new Promise((resolve) => {
     const currentProcess = serverProcess;
-    currentProcess.once("exit", () => resolve(null));
+    let resolved = false;
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      resolve(null);
+    };
+
+    currentProcess.once("exit", finish);
     currentProcess.kill();
 
     setTimeout(() => {
-      if (!currentProcess.killed) {
-        currentProcess.kill("SIGKILL");
-      }
-      resolve(null);
+      finish();
     }, 3000);
   });
+
+  serverProcess = null;
 }
 
 async function bootstrapDesktopApp() {
