@@ -1,6 +1,6 @@
 {
   "name": "mxpage",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": false,
   "description": "MxPage AI e-commerce detail page generation and editing workspace",
   "author": "灵矩绘境 · MxPage",
@@ -75,6 +75,7 @@
     "files": [
       "desktop/**/*",
       ".next-desktop/standalone/**/*",
+      "!.next-desktop/standalone/dist-desktop/**/*",
       ".next-desktop/static/**/*",
       "public/**/*",
       "scripts/runtime-paths.cjs",

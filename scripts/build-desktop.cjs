@@ -8,6 +8,7 @@ const { ensureSafeWorkdir } = require("./safe-workdir.cjs");
 const projectRoot = path.resolve(__dirname, "..");
 const desktopDistDirName = ".next-desktop";
 const desktopDistDir = path.join(projectRoot, desktopDistDirName);
+const packagedOutputDir = path.join(projectRoot, "dist-desktop");
 const safeCwd = ensureSafeWorkdir(projectRoot);
 
 function runCommand(command, args, options = {}) {
@@ -70,6 +71,11 @@ async function runNextBuild() {
   });
 }
 
+async function cleanDesktopBuildArtifacts() {
+  await removePath(desktopDistDir);
+  await removePath(packagedOutputDir);
+}
+
 async function prepareStandaloneBundle() {
   const standaloneRoot = path.join(desktopDistDir, "standalone");
   const serverEntry = path.join(standaloneRoot, "server.js");
@@ -111,6 +117,7 @@ async function prepareStandaloneBundle() {
 }
 
 async function prepareDesktopBuild() {
+  await cleanDesktopBuildArtifacts();
   await runNextBuild();
   await prepareStandaloneBundle();
   console.log("Desktop bundle prepared successfully.");
