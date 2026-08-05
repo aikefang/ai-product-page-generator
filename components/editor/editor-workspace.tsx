@@ -1273,12 +1273,35 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                 </div>
                 <div className="space-y-2">
                   {(selectedSection.versions ?? []).map((version: any) => (
-                    <div key={version.id} className="rounded-xl border border-border p-2.5">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
+                    <div key={version.id} className="rounded-xl border border-border bg-background/70 p-2.5">
+                      <div className="grid grid-cols-[minmax(0,1fr)_48px_auto] items-center gap-3">
+                        <div className="min-w-0">
                           <p className="text-sm font-medium">v{version.versionNumber}</p>
                           <p className="text-xs text-muted-foreground">{version.isActive ? "当前生效版本" : "历史版本"}</p>
                         </div>
+                        {version.imageUrl ? (
+                          <button
+                            type="button"
+                            className="h-12 w-12 overflow-hidden rounded-xl border border-border bg-muted transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                            title={`预览 v${version.versionNumber}`}
+                            aria-label={`预览 v${version.versionNumber}`}
+                            onClick={() =>
+                              openImagePreview({
+                                url: version.imageUrl,
+                                title: `${selectedSection.title} v${version.versionNumber}`,
+                                meta: version.isActive ? "当前生效版本" : "历史版本",
+                              })
+                            }
+                          >
+                            <img
+                              src={version.imageUrl}
+                              alt={`${selectedSection.title} v${version.versionNumber}`}
+                              className="h-full w-full object-cover"
+                            />
+                          </button>
+                        ) : (
+                          <div className="h-12 w-12 rounded-xl border border-dashed border-border bg-muted/40" />
+                        )}
                         {!version.isActive ? (
                           <Button size="sm" variant="outline" className="h-8 px-2.5 text-xs" onClick={() => activateVersion(version.id)}>
                             设为当前
