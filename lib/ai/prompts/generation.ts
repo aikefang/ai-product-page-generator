@@ -114,10 +114,11 @@ export function buildRegenerationPrompt(
 export function buildImageEditPrompt(
   section: PageSection,
   referenceAssets: ProductAsset[] = [],
-  mode: "repaint" | "enhance" | "translate" = "repaint",
+  mode: "repaint" | "enhance" | "translate" | "inpaint" = "repaint",
   aspectRatio: "1:1" | "3:4" | "9:16" = "9:16",
   contentLanguage: ContentLanguage = "zh-CN",
   generationRequirements?: string | null,
+  editInstruction?: string | null,
 ) {
   const targetLanguage = contentLanguageNamesForPrompt[normalizeContentLanguage(contentLanguage)];
   const modeInstruction =
@@ -125,17 +126,46 @@ export function buildImageEditPrompt(
       ? `This is an in-image translation task. Use the current image as the base and translate every visible user-facing word, headline, selling point, label, badge, CTA, note, and disclaimer into ${targetLanguage}. Preserve the original product, layout, composition, typography hierarchy, colors, lighting, and commercial style as much as possible. Do not add new claims or redesign the image except where text length requires natural typographic fitting. Remove the original-language text after replacing it with ${targetLanguage}.`
       : mode === "enhance"
         ? "This is an enhancement task. Use the current image as the base, preserve the overall framing, and improve realism, texture, lighting, clarity, edge quality, and commercial polish."
+        : mode === "inpaint"
+          ? "This is a localized inpainting task. Use the current image as the base and modify only the transparent/painted mask area. Preserve every unmasked area as much as possible, including product identity, typography, labels, layout, background, lighting, shadows, colors, framing, and composition. Use the reference images only to repair or regenerate the masked detail. Do not redesign the whole image."
         : "This is a repaint task. Use the current image as the base, keep the same product identity, and redesign the composition, atmosphere, styling, and conversion emphasis according to the section goal.";
 
   return [
     buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage, generationRequirements),
     modeInstruction,
+    mode === "inpaint" && editInstruction?.trim()
+      ? `User local edit instruction: ${editInstruction.trim()}`
+      : "",
     "The current section image must be treated as the editable base image.",
     "Keep the product identical to the uploaded main product image and do not replace it with a different item.",
     mode === "translate"
       ? "Only change the in-image language. Do not translate invisible metadata, do not add subtitles outside the artwork, and do not leave bilingual duplicates unless the original design intentionally uses bilingual branding."
       : "",
     "Output one marketplace-ready mobile e-commerce image only.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function buildLocalInpaintPrompt(
+  section: PageSection,
+  referenceAssets: ProductAsset[] = [],
+  editInstruction?: string | null,
+) {
+  return [
+    "Localized inpainting edit.",
+    "The first image is the base image. A mask image is attached to define the editable area.",
+    "Only the transparent area of the mask may be regenerated. All opaque/unmasked pixels must be preserved as closely as possible.",
+    "Do not redesign the whole image. Do not change crop, layout, typography, labels, background, product position, lighting, color palette, or any unmasked object.",
+    "Blend the edited area naturally into its surroundings, matching existing perspective, material, shadows, edges, sharpness, and noise.",
+    referenceAssets.length
+      ? `Additional reference images: ${referenceAssets.map((item) => item.fileName).join(" / ")}. Use them only to repair or regenerate details inside the masked area. Do not use them as a reason to change unmasked areas.`
+      : "No additional reference images were intentionally provided for this local edit.",
+    `Section context: ${section.title}. ${section.goal}`,
+    editInstruction?.trim()
+      ? `User local edit instruction: ${editInstruction.trim()}`
+      : "",
+    "Return one edited image with the same overall composition as the base image.",
   ]
     .filter(Boolean)
     .join("\n");

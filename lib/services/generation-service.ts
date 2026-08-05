@@ -3,6 +3,7 @@ import type { PageSection, ProductAsset } from "@prisma/client";
 
 import {
   buildImageEditPrompt,
+  buildLocalInpaintPrompt,
   buildRegenerationPrompt,
   buildSectionImagePrompt,
   buildSectionSvgLayoutPrompt,
@@ -432,6 +433,7 @@ async function editWithFallback(params: {
   candidateModels: string[];
   prompt: string;
   image: string;
+  mask?: string;
   size: string;
   aspectRatio: SectionImageAspectRatio;
   referenceImages: string[];
@@ -448,6 +450,7 @@ async function editWithFallback(params: {
         model,
         prompt: params.prompt,
         image: params.image,
+        mask: params.mask,
         size: params.size,
         aspectRatio: params.aspectRatio,
         referenceImages: params.referenceImages,
@@ -921,8 +924,10 @@ export async function editSectionImage(
   options?: {
     preferredModelId?: string | null;
     referenceAssetIds?: string[];
-    editMode?: "repaint" | "enhance" | "translate";
+    editMode?: "repaint" | "enhance" | "translate" | "inpaint";
     targetLanguage?: ContentLanguage;
+    mask?: string;
+    editInstruction?: string;
   },
 ) {
   const project = await prisma.project.findUnique({
@@ -965,14 +970,24 @@ export async function editSectionImage(
   });
   const selectedModel = modelCandidates[0] ?? null;
   const explicitReferenceAssets = await resolveReferenceAssets(options?.referenceAssetIds ?? []);
+  const editMode = options?.editMode ?? "repaint";
+  if (editMode === "inpaint" && !options?.mask) {
+    throw new Error("局部重绘需要先涂抹需要修改的区域。");
+  }
+  if (editMode === "inpaint" && !options?.editInstruction?.trim()) {
+    throw new Error("局部重绘需要填写修改说明。");
+  }
   const productReferenceAssets = mergeReferenceAssets(project.assets as AssetRecord[], explicitReferenceAssets as AssetRecord[]);
+  const effectiveReferenceAssets =
+    editMode === "inpaint"
+      ? (explicitReferenceAssets as AssetRecord[])
+      : productReferenceAssets;
   const baseImage = await assetToDataUrl(section.currentImageAsset as AssetRecord);
   const referenceImages = await Promise.all(
-    productReferenceAssets
+    effectiveReferenceAssets
       .filter((asset) => asset.id !== section.currentImageAssetId)
       .map((asset) => assetToDataUrl(asset)),
   );
-  const editMode = options?.editMode ?? "repaint";
   const effectiveContentLanguage = editMode === "translate" ? normalizeContentLanguage(options?.targetLanguage) : generationSettings.contentLanguage;
   const runningTask = await findRecentRunningTask({
     projectId,
@@ -981,7 +996,7 @@ export async function editSectionImage(
     maxAgeMinutes: 20,
   });
   if (runningTask) {
-    throw new Error("当前模块图仍在重绘或增强中，请等待这一轮完成后再试。");
+    throw new Error("当前模块图仍在重绘、增强或局部重绘中，请等待这一轮完成后再试。");
   }
 
   const task = await createTask({
@@ -995,9 +1010,11 @@ export async function editSectionImage(
       model: selectedModel,
       modelCandidates,
       baseImageAssetId: section.currentImageAssetId,
+      hasMask: Boolean(options?.mask),
+      editInstruction: editMode === "inpaint" ? options?.editInstruction ?? "" : undefined,
       referenceAssetIds: options?.referenceAssetIds ?? [],
-      effectiveReferenceAssetIds: productReferenceAssets.map((asset) => asset.id),
-      allowSvgFallback: generationSettings.allowSvgFallback,
+      effectiveReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
+      allowSvgFallback: editMode === "inpaint" ? false : generationSettings.allowSvgFallback,
     },
   });
 
@@ -1007,32 +1024,43 @@ export async function editSectionImage(
   });
 
   try {
-    const basePrompt = buildImageEditPrompt(
-      section,
-      productReferenceAssets as ProductAsset[],
-      editMode,
-      sectionAspectRatio,
-      effectiveContentLanguage,
-      generationRequirements,
-    );
-    const prompt = await buildVisualPromptWithAgent({
-      provider,
-      adapter,
-      mode: "image_edit",
-      title: section.title,
-      goal: section.goal,
-      copy: section.copy,
-      basePrompt,
-      aspectRatio: sectionAspectRatio,
-      contentLanguage: effectiveContentLanguage,
-      referenceImages: [baseImage, ...referenceImages],
-      referenceAssets: productReferenceAssets as ProductAsset[],
-      productContext: project.analysis?.normalizedResult ?? project.modelSnapshot ?? null,
-      visualStyleGuide,
-      projectId,
-      sectionId,
-      operation: editMode === "translate" ? "visual_prompt_agent_translate_section" : editMode === "enhance" ? "visual_prompt_agent_enhance_section" : "visual_prompt_agent_repaint_section",
-    });
+    const basePrompt =
+      editMode === "inpaint"
+        ? buildLocalInpaintPrompt(
+            section,
+            effectiveReferenceAssets as ProductAsset[],
+            options?.editInstruction,
+          )
+        : buildImageEditPrompt(
+            section,
+            effectiveReferenceAssets as ProductAsset[],
+            editMode,
+            sectionAspectRatio,
+            effectiveContentLanguage,
+            generationRequirements,
+            options?.editInstruction,
+          );
+    const prompt =
+      editMode === "inpaint"
+        ? basePrompt
+        : await buildVisualPromptWithAgent({
+            provider,
+            adapter,
+            mode: "image_edit",
+            title: section.title,
+            goal: section.goal,
+            copy: section.copy,
+            basePrompt,
+            aspectRatio: sectionAspectRatio,
+            contentLanguage: effectiveContentLanguage,
+            referenceImages: [baseImage, ...referenceImages],
+            referenceAssets: effectiveReferenceAssets as ProductAsset[],
+            productContext: project.analysis?.normalizedResult ?? project.modelSnapshot ?? null,
+            visualStyleGuide,
+            projectId,
+            sectionId,
+            operation: editMode === "translate" ? "visual_prompt_agent_translate_section" : editMode === "enhance" ? "visual_prompt_agent_enhance_section" : "visual_prompt_agent_repaint_section",
+          });
 
     let imageAsset;
     let version;
@@ -1049,12 +1077,13 @@ export async function editSectionImage(
         candidateModels: modelCandidates,
         prompt,
         image: baseImage,
+        mask: options?.mask,
         size: outputSize,
         aspectRatio: sectionAspectRatio,
         referenceImages,
         projectId,
         sectionId,
-        operation: editMode === "translate" ? "translate_section_image" : editMode === "enhance" ? "enhance_section_image" : "repaint_section_image",
+        operation: editMode === "translate" ? "translate_section_image" : editMode === "enhance" ? "enhance_section_image" : editMode === "inpaint" ? "inpaint_section_image" : "repaint_section_image",
       });
 
       imageAsset = await saveGeneratedImage({
@@ -1068,14 +1097,30 @@ export async function editSectionImage(
           editMode,
           targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
           baseImageAssetId: section.currentImageAssetId,
-          sourceReferenceAssetIds: productReferenceAssets.map((asset) => asset.id),
-          primaryReferenceAssetId: productReferenceAssets[0]?.id ?? null,
+          hasMask: Boolean(options?.mask),
+          editInstruction: editMode === "inpaint" ? options?.editInstruction ?? "" : undefined,
+          sourceReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
+          primaryReferenceAssetId: effectiveReferenceAssets[0]?.id ?? null,
         },
       });
 
       usedModel = generation.model;
       generationMode = "image_api";
     } catch (error) {
+      if (editMode === "inpaint") {
+        const detail = error instanceof Error ? error.message : "Unknown image inpaint error";
+        if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
+          throw new Error("当前 API Key 的局部重绘额度已用尽。请前往代理商控制台提高或移除月度限额，或更换可用的 API Key。");
+        }
+        if (isTransientImageNetworkFailure(detail)) {
+          throw new Error(buildTransientImageNetworkMessage(detail));
+        }
+        const summary = summarizeProviderImageFailure(detail, "edit");
+        throw new Error(
+          `当前 Provider 没有可用的真实局部重绘能力，或不支持 multipart mask 图片编辑。局部重绘不会使用 SVG/普通重绘兜底，以避免改动未涂抹区域。原因摘要：${summary}`,
+        );
+      }
+
       if (!generationSettings.allowSvgFallback) {
         const detail = error instanceof Error ? error.message : "Unknown image edit error";
         if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
@@ -1094,7 +1139,7 @@ export async function editSectionImage(
         section,
         adapter,
         provider,
-        referenceAssets: productReferenceAssets,
+        referenceAssets: effectiveReferenceAssets,
         aspectRatio: sectionAspectRatio,
         contentLanguage: generationSettings.contentLanguage,
       });
@@ -1113,9 +1158,10 @@ export async function editSectionImage(
           editMode,
           targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
           baseImageAssetId: section.currentImageAssetId,
+          hasMask: false,
           layout: fallback.layout,
-          sourceReferenceAssetIds: productReferenceAssets.map((asset) => asset.id),
-          primaryReferenceAssetId: productReferenceAssets[0]?.id ?? null,
+          sourceReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
+          primaryReferenceAssetId: effectiveReferenceAssets[0]?.id ?? null,
           imageApiError: error instanceof Error ? error.message : "Unknown image edit api error",
         },
       });
@@ -1155,7 +1201,9 @@ export async function editSectionImage(
       usedModel,
       generationMode,
       baseImageAssetId: section.currentImageAssetId,
-      sourceReferenceAssetIds: productReferenceAssets.map((asset) => asset.id),
+      hasMask: Boolean(options?.mask),
+      editInstruction: editMode === "inpaint" ? options?.editInstruction ?? "" : undefined,
+      sourceReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
     });
 
     return { imageAsset, version, usedModel, generationMode, editMode, targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined };

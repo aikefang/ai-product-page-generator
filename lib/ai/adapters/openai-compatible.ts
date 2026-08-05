@@ -609,6 +609,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     images: string[],
     options?: {
       imageFieldName?: "image" | "image[]";
+      mask?: string;
       timeoutMs?: number;
       monitor?: AiMonitorContext;
       signal?: AbortSignal;
@@ -626,6 +627,9 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     images.forEach((image, index) => {
       form.append(imageFieldName, dataUrlToBlob(image), `image-${index + 1}.png`);
     });
+    if (options?.mask) {
+      form.append("mask", dataUrlToBlob(options.mask), "mask.png");
+    }
 
     const response = await this.requestRaw(
       path,
@@ -1060,6 +1064,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     model: string;
     prompt: string;
     images: string[];
+    mask?: string;
     size?: string;
     aspectRatio?: "1:1" | "3:4" | "9:16";
     timeoutMs?: number;
@@ -1079,6 +1084,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
         }>("/images/edits", fields, input.images, {
           imageFieldName,
+          mask: input.mask,
           timeoutMs: input.timeoutMs ?? 120000,
           monitor: input.monitor,
           signal: input.signal,
@@ -1232,7 +1238,27 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   async editImage(input: ImageEditRequest): Promise<ImageGenerationResult> {
     const imageRefs = toImageRefs([input.image, ...(input.referenceImages ?? [])]);
     let googleProtocolError: unknown = null;
-    if (isGeminiImageModel(input.model)) {
+
+    if (input.mask) {
+      try {
+        return await this.generateOpenAiGptImageWithReferences({
+          model: input.model,
+          prompt: input.prompt,
+          images: [input.image, ...(input.referenceImages ?? [])],
+          mask: input.mask,
+          size: input.size,
+          aspectRatio: input.aspectRatio,
+          timeoutMs: input.timeoutMs,
+          monitor: input.monitor,
+          signal: input.signal,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown multipart mask image edit error";
+        throw new Error(`Multipart mask image edit failed: ${message}`);
+      }
+    }
+
+    if (isGeminiImageModel(input.model) && !input.mask) {
       try {
         return await this.generateGeminiImageWithGoogleProtocol({
           model: input.model,

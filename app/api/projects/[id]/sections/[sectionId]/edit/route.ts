@@ -17,6 +17,8 @@ export async function POST(
         referenceAssetIds: input.referenceAssetIds,
         editMode: input.editMode,
         targetLanguage: input.targetLanguage,
+        mask: input.mask,
+        editInstruction: input.editInstruction,
       });
       return ok(result);
     } catch (error) {

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ImagePlus, Languages, Loader2, MessageCircle, RotateCcw, Save, ShoppingCart, Sparkles, Square, Star, ZoomIn } from "lucide-react";
 
+import { LocalRepaintPanel, type LocalRepaintPanelHandle, type LocalRepaintPayload } from "@/components/editor/local-repaint-panel";
 import { useImagePreview } from "@/components/shared/image-preview-provider";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -34,7 +35,8 @@ type TaskPayload = {
   errorMessage?: string | null;
 };
 type ImageAspectRatio = "3:4" | "9:16";
-type SectionAction = "generate" | "regenerate" | "repaint" | "enhance";
+type SectionAction = "generate" | "regenerate" | "repaint" | "enhance" | "inpaint";
+type ImageEditMode = "repaint" | "enhance" | "translate" | "inpaint";
 type SectionKind =
   | "hero"
   | "selling_points"
@@ -311,6 +313,7 @@ function getActionText(action: string | null) {
   if (action === "generate") return "正在生成当前模块图，请稍候...";
   if (action === "regenerate") return "正在重新生成当前模块图，请稍候...";
   if (action === "repaint") return "正在基于当前图重绘，请稍候...";
+  if (action === "inpaint") return "正在基于涂抹区域局部重绘，请稍候...";
   if (action === "enhance") return "正在基于当前图增强，请稍候...";
   return "";
 }
@@ -326,6 +329,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const [selectedHeroIndex, setSelectedHeroIndex] = useState(0);
   const [translationTargetLanguage, setTranslationTargetLanguage] = useState<ContentLanguage>("en-US");
   const [localRepaintOpen, setLocalRepaintOpen] = useState(false);
+  const localRepaintPanelRef = useRef<LocalRepaintPanelHandle | null>(null);
   const referenceUploadInputRef = useRef<HTMLInputElement | null>(null);
   const previewScrollRef = useRef<HTMLDivElement | null>(null);
   const previewSectionRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -357,6 +361,17 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const referenceAssets = useMemo(
     () => project.assets.filter((asset: any) => ["REFERENCE", "DETAIL", "ANGLE"].includes(asset.type)),
     [project.assets],
+  );
+  const selectedReferenceAssets = useMemo(
+    () =>
+      referenceAssets
+        .filter((asset: any) => checkedReferences.includes(asset.id))
+        .map((asset: any) => ({
+          id: asset.id,
+          title: assetTypeLabels[asset.type] ?? asset.fileName,
+          imageUrl: asset.url,
+        })),
+    [checkedReferences, referenceAssets],
   );
   const galleryImages = useMemo(() => buildGalleryImages(project, previewConfig.heroImageCount), [project, previewConfig.heroImageCount]);
   const activeHeroImage = galleryImages[selectedHeroIndex] ?? galleryImages[0] ?? null;
@@ -571,8 +586,12 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     }
   };
 
-  const runImageEdit = async (editMode: "repaint" | "enhance" | "translate", targetLanguage?: ContentLanguage) => {
-    if (!selectedSection) return;
+  const runImageEdit = async (
+    editMode: ImageEditMode,
+    targetLanguage?: ContentLanguage,
+    localRepaintPayload?: LocalRepaintPayload,
+  ) => {
+    if (!selectedSection) return false;
     const sectionId = selectedSection.id;
     const previousStatus = selectedSection.status;
     if (editMode !== "translate") {
@@ -583,7 +602,13 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       const response = await fetch(`/api/projects/${project.id}/sections/${sectionId}/edit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ referenceAssetIds: checkedReferences, editMode, targetLanguage }),
+        body: JSON.stringify({
+          referenceAssetIds: checkedReferences,
+          editMode,
+          targetLanguage,
+          mask: localRepaintPayload?.mask,
+          editInstruction: localRepaintPayload?.editInstruction,
+        }),
       });
       const payload = await response.json();
       if (!payload.success) {
@@ -594,14 +619,23 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
           toast.error(message);
         }
         await refreshProject();
-        return;
+        return false;
       }
       if (payload.data?.generationMode === "svg_fallback") {
         toast.warning("当前 Provider 没有可用真实图片编辑端点，本次结果为 SVG 兜底预览。");
       } else {
-        toast.success(editMode === "translate" ? "已将当前图转为目标语言，并自动保存新版本" : editMode === "repaint" ? "已基于当前图完成重绘，并自动保存新版本" : "已基于当前图完成增强，并自动保存新版本");
+        toast.success(
+          editMode === "translate"
+            ? "已将当前图转为目标语言，并自动保存新版本"
+            : editMode === "inpaint"
+              ? "已完成局部重绘，并自动保存新版本"
+              : editMode === "repaint"
+                ? "已基于当前图完成重绘，并自动保存新版本"
+                : "已基于当前图完成增强，并自动保存新版本",
+        );
       }
       await refreshProject();
+      return true;
     } catch (error) {
       if (error instanceof Error && /task canceled/i.test(error.message)) {
         toast.message("已终止当前模块图编辑");
@@ -611,6 +645,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       if (editMode !== "translate") {
         setSectionStatus(sectionId, previousStatus);
       }
+      return false;
     } finally {
       if (editMode !== "translate") {
         finishSectionAction(sectionId);
@@ -618,6 +653,25 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     }
   };
 
+  const runLocalRepaint = async () => {
+    const validationMessage = localRepaintPanelRef.current?.getValidationMessage();
+    if (validationMessage) {
+      toast.error(validationMessage);
+      return;
+    }
+
+    const payload = localRepaintPanelRef.current?.getPayload();
+    if (!payload) {
+      toast.error("局部重绘参数生成失败，请重新涂抹后再试。");
+      return;
+    }
+
+    const success = await runImageEdit("inpaint", undefined, payload);
+    if (success) {
+      localRepaintPanelRef.current?.reset();
+      setLocalRepaintOpen(false);
+    }
+  };
 
   const translateGeneratedDetailPage = async () => {
     if (generatedSections.length === 0) {
@@ -974,7 +1028,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                         增强
                       </Button>
                       <Button onClick={() => setLocalRepaintOpen(true)} disabled={!hasGeneratedImage || selectedSectionIsGenerating || Boolean(runningPageAction)} variant="outline" className={compactActionButtonClass}>
-                        <Sparkles className="h-3.5 w-3.5" />
+                        {selectedSectionAction === "inpaint" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                         局部重绘
                       </Button>
                     </div>
@@ -1169,12 +1223,25 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         title="局部重绘"
         width={1000}
         closeOnOverlayClick={false}
+        confirmContent="开始重绘"
+        loading={selectedSectionAction === "inpaint"}
+        confirmDisabled={!hasGeneratedImage || selectedSectionIsGenerating || Boolean(runningPageAction)}
+        cancelDisabled={selectedSectionAction === "inpaint"}
         onCancel={() => setLocalRepaintOpen(false)}
-        onConfirm={() => setLocalRepaintOpen(false)}
+        onConfirm={runLocalRepaint}
       >
-        <div className="rounded-2xl border border-dashed border-border bg-muted/30 p-6 text-sm leading-6 text-muted-foreground">
-          这里后续会放局部涂抹画布、画笔控制和局部修改说明。当前先用于预览通用抽屉弹窗的布局效果。
-        </div>
+        {selectedSection?.imageUrl ? (
+          <LocalRepaintPanel
+            ref={localRepaintPanelRef}
+            imageUrl={selectedSection.imageUrl}
+            title={selectedSection.title}
+            references={selectedReferenceAssets}
+          />
+        ) : (
+          <div className="rounded-2xl border border-dashed border-border bg-muted/30 p-6 text-sm leading-6 text-muted-foreground">
+            当前模块还没有可局部重绘的图片，请先生成当前模块图。
+          </div>
+        )}
       </DrawerDialog>
     </div>
   );
