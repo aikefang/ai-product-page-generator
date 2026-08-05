@@ -35,6 +35,10 @@ const svgLayoutSchema = z.object({
   panelColor: z.string().min(4),
 });
 
+const inpaintInstructionSchema = z.object({
+  instruction: z.string().min(2).max(1200),
+});
+
 const svgCopyByLanguage: Partial<Record<
   ContentLanguage,
   {
@@ -232,6 +236,23 @@ function buildSvgModelCandidates(provider: ProviderContext) {
       .filter((item) => /gemini|gpt-4o|gpt-5/i.test(item.modelId) && !/preview|experimental|beta|test/i.test(item.modelId))
       .map((item) => item.modelId),
     ...textOnly.filter((item) => !/preview|experimental|beta|test/i.test(item.modelId)).map((item) => item.modelId),
+    ...textOnly.map((item) => item.modelId),
+  ].filter(Boolean) as string[];
+
+  return [...new Set(candidates)];
+}
+
+function buildVisionTextModelCandidates(provider: ProviderContext) {
+  const visionText = provider.models.filter((item) => hasTextCapability(item) && hasVisionCapability(item));
+  const textOnly = provider.models.filter((item) => hasTextCapability(item));
+
+  const candidates = [
+    provider.models.find((item) => item.isDefaultPlanning && hasTextCapability(item) && hasVisionCapability(item))?.modelId ?? null,
+    provider.models.find((item) => item.isDefaultAnalysis && hasTextCapability(item) && hasVisionCapability(item))?.modelId ?? null,
+    ...visionText
+      .filter((item) => /gpt-4o|gpt-4\.1|gpt-5|gemini|qwen.*vl|kimi|moonshot/i.test(item.modelId) && !/image|imagen|dall|flux|recraft/i.test(item.modelId))
+      .map((item) => item.modelId),
+    ...visionText.map((item) => item.modelId),
     ...textOnly.map((item) => item.modelId),
   ].filter(Boolean) as string[];
 
@@ -918,6 +939,128 @@ export async function regenerateSectionImage(
   });
 }
 
+export async function generateLocalInpaintInstruction(
+  projectId: string,
+  sectionId: string,
+  input: {
+    baseMask: string;
+    basePreviewImage?: string | null;
+    references: Array<{
+      assetId: string;
+      mask: string;
+      previewImage?: string | null;
+      cropImage?: string | null;
+    }>;
+  },
+) {
+  const section = await prisma.pageSection.findUnique({
+    where: { id: sectionId },
+    include: {
+      currentImageAsset: true,
+      project: {
+        include: {
+          analysis: true,
+        },
+      },
+    },
+  });
+
+  if (!section || section.projectId !== projectId) {
+    throw new Error("Section not found.");
+  }
+
+  if (!section.currentImageAsset) {
+    throw new Error("当前模块还没有可用于生成说明的底图。");
+  }
+
+  if (input.references.length === 0) {
+    throw new Error("请至少选择并涂抹一张参考图。");
+  }
+
+  const { provider, adapter } = await getProviderAdapter();
+  const modelCandidates = buildVisionTextModelCandidates(provider);
+  const model = modelCandidates[0] ?? null;
+  if (!model) {
+    throw new Error("当前 Provider 没有可用于生成局部修改说明的视觉文本模型。");
+  }
+
+  const requestedReferenceIds = input.references.map((reference) => reference.assetId);
+  const referenceAssets = await prisma.productAsset.findMany({
+    where: {
+      projectId,
+      id: { in: requestedReferenceIds },
+    },
+  });
+  const orderedReferenceAssets = requestedReferenceIds
+    .map((assetId) => referenceAssets.find((asset) => asset.id === assetId))
+    .filter(Boolean) as AssetRecord[];
+  if (orderedReferenceAssets.length !== requestedReferenceIds.length) {
+    throw new Error("部分参考图不存在或不属于当前项目。");
+  }
+
+  const baseImage = await assetToDataUrl(section.currentImageAsset as AssetRecord);
+  const referenceImages = await Promise.all(orderedReferenceAssets.map((asset) => assetToDataUrl(asset)));
+  const imageInputs: string[] = [];
+  const imageDescriptions: string[] = [];
+  const pushImage = (image: string | null | undefined, description: string) => {
+    if (!image) return;
+    imageInputs.push(image);
+    imageDescriptions.push(`Image #${imageInputs.length}: ${description}`);
+  };
+
+  pushImage(baseImage, "当前需要局部重绘的原图。");
+  pushImage(input.basePreviewImage, "当前原图的红色涂抹预览图；红色区域是用户要改的位置。");
+  pushImage(input.baseMask, "当前原图的 mask；透明区域是用户要改的位置，白色不透明区域必须保持不变。");
+  orderedReferenceAssets.forEach((asset, index) => {
+    pushImage(referenceImages[index], `参考图 ${index + 1} 原图，文件名：${asset.fileName}。`);
+    pushImage(input.references[index]?.previewImage, `参考图 ${index + 1} 的红色涂抹预览图；红色区域是用户想借鉴的局部细节。`);
+    pushImage(input.references[index]?.mask, `参考图 ${index + 1} 的 mask；透明区域是用户想借鉴的局部细节。`);
+    pushImage(input.references[index]?.cropImage, `参考图 ${index + 1} 的涂抹区域自动裁剪图；这是最终局部重绘时需要优先参考的局部细节。`);
+  });
+
+  const userPrompt = [
+    "你是电商图片局部重绘的修图说明助手。你的任务不是生成图片，而是根据用户涂抹区域写一段可直接用于局部重绘模型的中文修改说明。",
+    "",
+    "输入图片顺序：",
+    ...imageDescriptions,
+    "",
+    "写说明时必须遵守：",
+    "- 只描述当前原图涂抹区域内应该如何修改。",
+    "- 明确引用参考图中被涂抹的局部细节，例如形状、边缘、材质、孔位、弯折角度、颜色或纹理。",
+    "- 如果提供了参考图涂抹区域裁剪图，优先根据裁剪图描述需要迁移到当前原图涂抹区域的细节。",
+    "- 明确要求保持未涂抹区域不变，包括构图、背景、文字、产品位置、光影、手部、道具和排版。",
+    "- 不要写成整图重绘，不要让模型改变画面整体风格。",
+    "- 输出一句或两句中文，适合直接填入“局部修改说明”。",
+    "",
+    "当前模块信息：",
+    `标题：${section.title}`,
+    `目标：${section.goal}`,
+    `文案：${section.copy}`,
+    `项目分析：${JSON.stringify(section.project.analysis?.normalizedResult ?? section.project.modelSnapshot ?? null).slice(0, 3000)}`,
+    "",
+    "只返回 JSON：{\"instruction\":\"...\"}",
+  ].join("\n");
+
+  const result = await adapter.generateStructured({
+    model,
+    systemPrompt: "Return strict JSON only. No markdown.",
+    userPrompt,
+    schema: inpaintInstructionSchema,
+    images: imageInputs,
+    timeoutMs: 90_000,
+    monitor: {
+      projectId,
+      sectionId,
+      operation: "generate_inpaint_instruction",
+    },
+  });
+
+  return {
+    instruction: result.parsed.instruction.trim(),
+    usedModel: model,
+  };
+}
+
 export async function editSectionImage(
   projectId: string,
   sectionId: string,
@@ -928,6 +1071,7 @@ export async function editSectionImage(
     targetLanguage?: ContentLanguage;
     mask?: string;
     editInstruction?: string;
+    referenceCropImages?: string[];
   },
 ) {
   const project = await prisma.project.findUnique({
@@ -983,11 +1127,15 @@ export async function editSectionImage(
       ? (explicitReferenceAssets as AssetRecord[])
       : productReferenceAssets;
   const baseImage = await assetToDataUrl(section.currentImageAsset as AssetRecord);
-  const referenceImages = await Promise.all(
+  const fullReferenceImages = await Promise.all(
     effectiveReferenceAssets
       .filter((asset) => asset.id !== section.currentImageAssetId)
       .map((asset) => assetToDataUrl(asset)),
   );
+  const referenceCropImages = editMode === "inpaint" ? options?.referenceCropImages ?? [] : [];
+  const referenceImages = editMode === "inpaint"
+    ? [...fullReferenceImages, ...referenceCropImages]
+    : fullReferenceImages;
   const effectiveContentLanguage = editMode === "translate" ? normalizeContentLanguage(options?.targetLanguage) : generationSettings.contentLanguage;
   const runningTask = await findRecentRunningTask({
     projectId,
@@ -1014,6 +1162,7 @@ export async function editSectionImage(
       editInstruction: editMode === "inpaint" ? options?.editInstruction ?? "" : undefined,
       referenceAssetIds: options?.referenceAssetIds ?? [],
       effectiveReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
+      referenceCropImageCount: referenceCropImages.length,
       allowSvgFallback: editMode === "inpaint" ? false : generationSettings.allowSvgFallback,
     },
   });
@@ -1030,6 +1179,7 @@ export async function editSectionImage(
             section,
             effectiveReferenceAssets as ProductAsset[],
             options?.editInstruction,
+            referenceCropImages.length,
           )
         : buildImageEditPrompt(
             section,
@@ -1100,6 +1250,7 @@ export async function editSectionImage(
           hasMask: Boolean(options?.mask),
           editInstruction: editMode === "inpaint" ? options?.editInstruction ?? "" : undefined,
           sourceReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
+          referenceCropImageCount: referenceCropImages.length,
           primaryReferenceAssetId: effectiveReferenceAssets[0]?.id ?? null,
         },
       });

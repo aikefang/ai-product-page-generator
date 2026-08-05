@@ -151,6 +151,7 @@ export function buildLocalInpaintPrompt(
   section: PageSection,
   referenceAssets: ProductAsset[] = [],
   editInstruction?: string | null,
+  referenceCropImageCount = 0,
 ) {
   return [
     "Localized inpainting edit.",
@@ -161,6 +162,9 @@ export function buildLocalInpaintPrompt(
     referenceAssets.length
       ? `Additional reference images: ${referenceAssets.map((item) => item.fileName).join(" / ")}. Use them only to repair or regenerate details inside the masked area. Do not use them as a reason to change unmasked areas.`
       : "No additional reference images were intentionally provided for this local edit.",
+    referenceCropImageCount > 0
+      ? `There are ${referenceCropImageCount} extra cropped reference image(s) after the full reference images. These crops are the user's painted reference regions and should be prioritized for the exact local detail, shape, texture, edge, and color inside the masked area.`
+      : "",
     `Section context: ${section.title}. ${section.goal}`,
     editInstruction?.trim()
       ? `User local edit instruction: ${editInstruction.trim()}`

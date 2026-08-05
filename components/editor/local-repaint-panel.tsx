@@ -1,8 +1,9 @@
 "use client";
 
-import { forwardRef, type PointerEvent, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Brush, Eraser } from "lucide-react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { Brush, WandSparkles } from "lucide-react";
 
+import { ImageMaskCanvas, type ImageMaskCanvasHandle } from "@/components/editor/image-mask-canvas";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,17 +12,21 @@ import { cn } from "@/lib/utils";
 export type LocalRepaintPayload = {
   mask: string;
   editInstruction: string;
+  referenceCropImages?: string[];
+};
+
+export type LocalRepaintMaskPayload = {
+  mask: string;
+  previewImage?: string | null;
 };
 
 export type LocalRepaintPanelHandle = {
   getPayload: () => LocalRepaintPayload | null;
+  getMaskPayload: () => LocalRepaintMaskPayload | null;
+  getMaskValidationMessage: () => string | null;
   getValidationMessage: () => string | null;
+  setInstruction: (instruction: string) => void;
   reset: () => void;
-};
-
-type Point = {
-  x: number;
-  y: number;
 };
 
 export type LocalRepaintReference = {
@@ -34,149 +39,50 @@ interface LocalRepaintPanelProps {
   imageUrl: string;
   title?: string;
   references?: LocalRepaintReference[];
+  autoInstructionLoading?: boolean;
+  onAutoGenerateInstruction?: () => void;
   className?: string;
 }
 
 export const LocalRepaintPanel = forwardRef<LocalRepaintPanelHandle, LocalRepaintPanelProps>(
-  ({ imageUrl, title, references = [], className }, ref) => {
-    const imageRef = useRef<HTMLImageElement | null>(null);
-    const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
-    const brushCanvasRef = useRef<HTMLCanvasElement | null>(null);
-    const lastPointRef = useRef<Point | null>(null);
-    const drawingRef = useRef(false);
+  (
+    {
+      imageUrl,
+      title,
+      references = [],
+      autoInstructionLoading = false,
+      onAutoGenerateInstruction,
+      className,
+    },
+    ref,
+  ) => {
+    const maskCanvasRef = useRef<ImageMaskCanvasHandle | null>(null);
     const [brushSize, setBrushSize] = useState(42);
     const [instruction, setInstruction] = useState("");
-    const [painted, setPainted] = useState(false);
-    const [imageReady, setImageReady] = useState(false);
-
-    const clearCanvas = () => {
-      const overlay = overlayCanvasRef.current;
-      const brush = brushCanvasRef.current;
-      overlay?.getContext("2d")?.clearRect(0, 0, overlay.width, overlay.height);
-      brush?.getContext("2d")?.clearRect(0, 0, brush.width, brush.height);
-      lastPointRef.current = null;
-      drawingRef.current = false;
-      setPainted(false);
-    };
-
-    const syncCanvasSize = () => {
-      const image = imageRef.current;
-      const overlay = overlayCanvasRef.current;
-      const brush = brushCanvasRef.current;
-      if (!image || !overlay || !brush || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
-        return;
-      }
-
-      overlay.width = image.naturalWidth;
-      overlay.height = image.naturalHeight;
-      brush.width = image.naturalWidth;
-      brush.height = image.naturalHeight;
-      setImageReady(true);
-      clearCanvas();
-    };
 
     useEffect(() => {
-      setImageReady(false);
       setInstruction("");
-      clearCanvas();
-
-      if (imageRef.current?.complete) {
-        window.requestAnimationFrame(syncCanvasSize);
-      }
     }, [imageUrl]);
 
-    const getCanvasPoint = (event: PointerEvent<HTMLCanvasElement>): Point | null => {
-      const canvas = overlayCanvasRef.current;
-      if (!canvas) return null;
+    const getMaskValidationMessage = () => {
+      const canvasMessage = maskCanvasRef.current?.getValidationMessage();
+      if (!maskCanvasRef.current || canvasMessage) {
+        return canvasMessage ?? "当前图片还没有加载完成，请稍后再试。";
+      }
+      return null;
+    };
 
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return null;
+    const getMaskPayload = () => {
+      const message = getMaskValidationMessage();
+      if (message) return null;
+
+      const mask = maskCanvasRef.current?.getMask();
+      if (!mask) return null;
 
       return {
-        x: ((event.clientX - rect.left) / rect.width) * canvas.width,
-        y: ((event.clientY - rect.top) / rect.height) * canvas.height,
+        mask,
+        previewImage: maskCanvasRef.current?.getPreviewImage() ?? null,
       };
-    };
-
-    const drawSegment = (point: Point) => {
-      const overlay = overlayCanvasRef.current;
-      const brush = brushCanvasRef.current;
-      if (!overlay || !brush) return;
-
-      const previous = lastPointRef.current ?? point;
-      const contexts = [
-        { context: overlay.getContext("2d"), strokeStyle: "rgba(255, 70, 85, 0.72)" },
-        { context: brush.getContext("2d"), strokeStyle: "rgba(255, 255, 255, 1)" },
-      ];
-
-      contexts.forEach(({ context, strokeStyle }) => {
-        if (!context) return;
-        context.save();
-        context.lineWidth = brushSize;
-        context.lineCap = "round";
-        context.lineJoin = "round";
-        context.strokeStyle = strokeStyle;
-        context.fillStyle = strokeStyle;
-        context.beginPath();
-        context.moveTo(previous.x, previous.y);
-        context.lineTo(point.x, point.y);
-        context.stroke();
-        context.beginPath();
-        context.arc(point.x, point.y, brushSize / 2, 0, Math.PI * 2);
-        context.fill();
-        context.restore();
-      });
-
-      lastPointRef.current = point;
-      setPainted(true);
-    };
-
-    const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
-      const point = getCanvasPoint(event);
-      if (!point || !imageReady) return;
-
-      event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      drawingRef.current = true;
-      lastPointRef.current = point;
-      drawSegment(point);
-    };
-
-    const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
-      if (!drawingRef.current) return;
-
-      const point = getCanvasPoint(event);
-      if (!point) return;
-
-      event.preventDefault();
-      drawSegment(point);
-    };
-
-    const stopDrawing = (event: PointerEvent<HTMLCanvasElement>) => {
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-      drawingRef.current = false;
-      lastPointRef.current = null;
-    };
-
-    const buildOpenAiMask = () => {
-      const brush = brushCanvasRef.current;
-      if (!brush) return null;
-
-      const mask = document.createElement("canvas");
-      mask.width = brush.width;
-      mask.height = brush.height;
-      const context = mask.getContext("2d");
-      if (!context) return null;
-
-      context.fillStyle = "rgba(255, 255, 255, 1)";
-      context.fillRect(0, 0, mask.width, mask.height);
-      context.globalCompositeOperation = "destination-out";
-      context.drawImage(brush, 0, 0);
-      context.globalCompositeOperation = "source-over";
-
-      return mask.toDataURL("image/png");
     };
 
     useImperativeHandle(ref, () => ({
@@ -184,24 +90,27 @@ export const LocalRepaintPanel = forwardRef<LocalRepaintPanelHandle, LocalRepain
         const message = getValidationMessage();
         if (message) return null;
 
-        const mask = buildOpenAiMask();
-        if (!mask) return null;
+        const maskPayload = getMaskPayload();
+        if (!maskPayload) return null;
 
         return {
-          mask,
+          mask: maskPayload.mask,
           editInstruction: instruction.trim(),
         };
       },
+      getMaskPayload,
+      getMaskValidationMessage,
       getValidationMessage,
+      setInstruction: (nextInstruction: string) => setInstruction(nextInstruction),
       reset: () => {
         setInstruction("");
-        clearCanvas();
+        maskCanvasRef.current?.reset();
       },
     }));
 
     function getValidationMessage() {
-      if (!imageReady) return "当前图片还没有加载完成，请稍后再试。";
-      if (!painted) return "请先在图片上涂抹需要局部重绘的区域。";
+      const maskMessage = getMaskValidationMessage();
+      if (maskMessage) return maskMessage;
       if (instruction.trim().length < 2) return "请填写局部重绘的修改说明。";
       return null;
     }
@@ -210,39 +119,13 @@ export const LocalRepaintPanel = forwardRef<LocalRepaintPanelHandle, LocalRepain
       <div className={cn("grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_300px]", className)}>
         <div className="min-h-0 overflow-auto rounded-2xl border border-border bg-slate-950/5 p-4 dark:bg-black/20">
           <div className="mx-auto max-w-[620px]">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{title ?? "当前图片"}</p>
-                <p className="text-xs text-muted-foreground">在需要修复的区域上涂抹，未涂抹区域会尽量保持不变。</p>
-              </div>
-              <Button type="button" variant="outline" size="sm" onClick={clearCanvas} disabled={!imageReady || !painted}>
-                <Eraser className="mr-1.5 h-3.5 w-3.5" />
-                清空
-              </Button>
-            </div>
-
-            <div className="relative overflow-hidden rounded-2xl border border-border bg-black shadow-sm">
-              <img
-                ref={imageRef}
-                src={imageUrl}
-                alt={title ?? "局部重绘底图"}
-                className="block h-auto w-full select-none"
-                draggable={false}
-                onLoad={syncCanvasSize}
-              />
-              <canvas
-                ref={overlayCanvasRef}
-                className="absolute inset-0 h-full w-full touch-none cursor-crosshair"
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={stopDrawing}
-                onPointerCancel={stopDrawing}
-                onPointerLeave={(event) => {
-                  if (drawingRef.current) stopDrawing(event);
-                }}
-              />
-              <canvas ref={brushCanvasRef} className="hidden" />
-            </div>
+            <ImageMaskCanvas
+              ref={maskCanvasRef}
+              imageUrl={imageUrl}
+              title={title ?? "当前图片"}
+              description="在需要修复的区域上涂抹，未涂抹区域会尽量保持不变。"
+              brushSize={brushSize}
+            />
           </div>
         </div>
 
@@ -264,7 +147,20 @@ export const LocalRepaintPanel = forwardRef<LocalRepaintPanelHandle, LocalRepain
           </div>
 
           <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">局部修改说明</Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-xs text-muted-foreground">局部修改说明</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onAutoGenerateInstruction}
+                disabled={autoInstructionLoading}
+                className="h-8 px-2 text-xs"
+              >
+                <WandSparkles className="mr-1.5 h-3.5 w-3.5" />
+                {autoInstructionLoading ? "生成中..." : "自动生成修改说明"}
+              </Button>
+            </div>
             <Textarea
               value={instruction}
               onChange={(event) => setInstruction(event.target.value)}

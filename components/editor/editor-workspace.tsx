@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { ImagePlus, Languages, Loader2, MessageCircle, RotateCcw, Save, ShoppingCart, Sparkles, Square, Star, ZoomIn } from "lucide-react";
 
 import { LocalRepaintPanel, type LocalRepaintPanelHandle, type LocalRepaintPayload } from "@/components/editor/local-repaint-panel";
+import { ReferenceMaskSelectionPanel, type ReferenceMaskSelectionPanelHandle } from "@/components/editor/reference-mask-selection-panel";
 import { useImagePreview } from "@/components/shared/image-preview-provider";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -329,7 +330,11 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const [selectedHeroIndex, setSelectedHeroIndex] = useState(0);
   const [translationTargetLanguage, setTranslationTargetLanguage] = useState<ContentLanguage>("en-US");
   const [localRepaintOpen, setLocalRepaintOpen] = useState(false);
+  const [referenceMaskOpen, setReferenceMaskOpen] = useState(false);
+  const [autoInstructionGenerating, setAutoInstructionGenerating] = useState(false);
+  const [referenceCropImages, setReferenceCropImages] = useState<string[]>([]);
   const localRepaintPanelRef = useRef<LocalRepaintPanelHandle | null>(null);
+  const referenceMaskPanelRef = useRef<ReferenceMaskSelectionPanelHandle | null>(null);
   const referenceUploadInputRef = useRef<HTMLInputElement | null>(null);
   const previewScrollRef = useRef<HTMLDivElement | null>(null);
   const previewSectionRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -373,6 +378,9 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         })),
     [checkedReferences, referenceAssets],
   );
+  useEffect(() => {
+    setReferenceCropImages([]);
+  }, [checkedReferences, selectedSectionId]);
   const galleryImages = useMemo(() => buildGalleryImages(project, previewConfig.heroImageCount), [project, previewConfig.heroImageCount]);
   const activeHeroImage = galleryImages[selectedHeroIndex] ?? galleryImages[0] ?? null;
   const selectedSectionIsHero = String(selectedSection?.type).toUpperCase() === "HERO";
@@ -608,6 +616,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
           targetLanguage,
           mask: localRepaintPayload?.mask,
           editInstruction: localRepaintPayload?.editInstruction,
+          referenceCropImages: localRepaintPayload?.referenceCropImages,
         }),
       });
       const payload = await response.json();
@@ -666,10 +675,79 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       return;
     }
 
-    const success = await runImageEdit("inpaint", undefined, payload);
+    const success = await runImageEdit("inpaint", undefined, {
+      ...payload,
+      referenceCropImages,
+    });
     if (success) {
+      setReferenceCropImages([]);
       localRepaintPanelRef.current?.reset();
-      setLocalRepaintOpen(false);
+    }
+  };
+
+  const openAutoInstructionDrawer = () => {
+    const maskValidationMessage = localRepaintPanelRef.current?.getMaskValidationMessage();
+    if (maskValidationMessage) {
+      toast.error(maskValidationMessage);
+      return;
+    }
+
+    if (selectedReferenceAssets.length === 0) {
+      toast.error("请先勾选至少一张参考图。");
+      return;
+    }
+
+    setReferenceMaskOpen(true);
+  };
+
+  const generateLocalRepaintInstruction = async () => {
+    if (!selectedSection) return;
+
+    const baseMaskPayload = localRepaintPanelRef.current?.getMaskPayload();
+    if (!baseMaskPayload) {
+      toast.error("请先在当前图上涂抹需要局部重绘的区域。");
+      return;
+    }
+
+    const referenceValidationMessage = referenceMaskPanelRef.current?.getValidationMessage();
+    if (referenceValidationMessage) {
+      toast.error(referenceValidationMessage);
+      return;
+    }
+
+    const references = referenceMaskPanelRef.current?.getPayload() ?? [];
+    if (references.length === 0) {
+      toast.error("请至少在一张参考图上涂抹需要参考的区域。");
+      return;
+    }
+
+    setAutoInstructionGenerating(true);
+    try {
+      const nextReferenceCropImages = references
+        .map((reference) => reference.cropImage)
+        .filter((image): image is string => Boolean(image));
+      const response = await fetch(`/api/projects/${project.id}/sections/${selectedSection.id}/inpaint-instruction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseMask: baseMaskPayload.mask,
+          basePreviewImage: baseMaskPayload.previewImage,
+          references,
+        }),
+      });
+      const payload = await response.json();
+      if (!payload.success || !payload.data?.instruction) {
+        throw new Error(payload.error?.message ?? "自动生成修改说明失败");
+      }
+
+      setReferenceCropImages(nextReferenceCropImages);
+      localRepaintPanelRef.current?.setInstruction(payload.data.instruction);
+      setReferenceMaskOpen(false);
+      toast.success("已生成局部修改说明，可以继续微调后开始重绘。");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "自动生成修改说明失败");
+    } finally {
+      setAutoInstructionGenerating(false);
     }
   };
 
@@ -1236,12 +1314,33 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
             imageUrl={selectedSection.imageUrl}
             title={selectedSection.title}
             references={selectedReferenceAssets}
+            autoInstructionLoading={autoInstructionGenerating}
+            onAutoGenerateInstruction={openAutoInstructionDrawer}
           />
         ) : (
           <div className="rounded-2xl border border-dashed border-border bg-muted/30 p-6 text-sm leading-6 text-muted-foreground">
             当前模块还没有可局部重绘的图片，请先生成当前模块图。
           </div>
         )}
+      </DrawerDialog>
+      <DrawerDialog
+        open={referenceMaskOpen}
+        onOpenChange={setReferenceMaskOpen}
+        title="参考图选位置"
+        description="根据已带入的参考图，涂抹每张参考图中希望 AI 借鉴的局部细节。"
+        width={1000}
+        closeOnOverlayClick={false}
+        confirmContent="生成说明"
+        loading={autoInstructionGenerating}
+        confirmDisabled={selectedReferenceAssets.length === 0 || autoInstructionGenerating}
+        cancelDisabled={autoInstructionGenerating}
+        onCancel={() => setReferenceMaskOpen(false)}
+        onConfirm={generateLocalRepaintInstruction}
+      >
+        <ReferenceMaskSelectionPanel
+          ref={referenceMaskPanelRef}
+          references={selectedReferenceAssets}
+        />
       </DrawerDialog>
     </div>
   );

@@ -19,6 +19,7 @@ export async function POST(
         targetLanguage: input.targetLanguage,
         mask: input.mask,
         editInstruction: input.editInstruction,
+        referenceCropImages: input.referenceCropImages,
       });
       return ok(result);
     } catch (error) {
