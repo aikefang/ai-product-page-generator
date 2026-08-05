@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { DrawerDialog } from "@/components/ui/drawer-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -324,6 +325,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const [runningPageAction, setRunningPageAction] = useState<"translate-page" | null>(null);
   const [selectedHeroIndex, setSelectedHeroIndex] = useState(0);
   const [translationTargetLanguage, setTranslationTargetLanguage] = useState<ContentLanguage>("en-US");
+  const [localRepaintOpen, setLocalRepaintOpen] = useState(false);
   const referenceUploadInputRef = useRef<HTMLInputElement | null>(null);
   const previewScrollRef = useRef<HTMLDivElement | null>(null);
   const previewSectionRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -971,6 +973,10 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                         {selectedSectionAction === "enhance" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                         增强
                       </Button>
+                      <Button onClick={() => setLocalRepaintOpen(true)} disabled={!hasGeneratedImage || selectedSectionIsGenerating || Boolean(runningPageAction)} variant="outline" className={compactActionButtonClass}>
+                        <Sparkles className="h-3.5 w-3.5" />
+                        局部重绘
+                      </Button>
                     </div>
 
                     <div className="grid gap-2 rounded-lg border border-border bg-muted/30 p-1.5 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:items-center">
@@ -1157,6 +1163,19 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
           )}
         </CardContent>
       </Card>
+      <DrawerDialog
+        open={localRepaintOpen}
+        onOpenChange={setLocalRepaintOpen}
+        title="局部重绘"
+        width={1000}
+        closeOnOverlayClick={false}
+        onCancel={() => setLocalRepaintOpen(false)}
+        onConfirm={() => setLocalRepaintOpen(false)}
+      >
+        <div className="rounded-2xl border border-dashed border-border bg-muted/30 p-6 text-sm leading-6 text-muted-foreground">
+          这里后续会放局部涂抹画布、画笔控制和局部修改说明。当前先用于预览通用抽屉弹窗的布局效果。
+        </div>
+      </DrawerDialog>
     </div>
   );
 }
