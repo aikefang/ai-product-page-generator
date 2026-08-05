@@ -1,9 +1,9 @@
 {
-  "name": "mxpage",
-  "version": "0.1.2",
+  "name": "turing",
+  "version": "1.0.0",
   "private": false,
-  "description": "MxPage AI e-commerce detail page generation and editing workspace",
-  "author": "灵矩绘境 · MxPage",
+  "description": "Turing AI painting and visual content generation workspace",
+  "author": "Turing",
   "main": "desktop/main.cjs",
   "scripts": {
     "dev": "node ./scripts/run-next-safe.cjs dev",
@@ -61,8 +61,9 @@
     "typescript": "^5.8.3"
   },
   "build": {
-    "appId": "com.mxpage.app",
-    "productName": "MxPage",
+    "appId": "com.turing-painting.app",
+    "productName": "图灵绘画",
+    "artifactName": "Turing-${version}-${arch}.${ext}",
     "asar": false,
     "asarUnpack": [
       ".next-desktop/standalone/node_modules/.prisma/**/*",
@@ -82,6 +83,9 @@
       "scripts/apply-prisma-migrations.cjs",
       "package.json"
     ],
+    "mac": {
+      "icon": "build/icon.icns"
+    },
     "win": {
       "icon": "build/icon.ico",
       "target": [
@@ -104,7 +108,7 @@
           ]
         }
       ],
-      "artifactName": "mxpage-${version}.${ext}"
+      "artifactName": "Turing-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,

@@ -68,7 +68,7 @@ type BatchItemStatus = {
   projectId?: string | null;
 };
 
-const systemProjectPlatform = "__mxpage_system_task__";
+const systemProjectPlatform = "__turing_system_task__";
 
 function storageRoot() {
   return path.resolve(process.cwd(), env.STORAGE_ROOT);
@@ -88,7 +88,7 @@ async function ensureSystemTaskProject() {
 
   return prisma.project.create({
     data: {
-      name: "MxPage 系统任务",
+      name: "图灵绘画系统任务",
       platform: systemProjectPlatform,
       style: "system",
       description: "内部后台任务占位项目，不在历史记录中展示。",

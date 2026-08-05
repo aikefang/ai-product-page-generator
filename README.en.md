@@ -1,8 +1,8 @@
-# MxPage
+# Turing
 
-MxPage is an AI-native workspace for e-commerce product detail pages, Xiaohongshu image posts, batch product creation, image editing, and private OpenAI-compatible deployments.
+Turing is an AI-native workspace for e-commerce product detail pages, Xiaohongshu image posts, batch product creation, image editing, and private OpenAI-compatible deployments.
 
-MxPage is published and maintained by Lingju Huijing.
+Turing is customized as an AI painting and visual content generation workspace.
 
 ## Features
 
@@ -35,7 +35,7 @@ DATABASE_URL="file:./dev.db"
 APP_SECRET="replace-with-your-own-long-secret"
 STORAGE_ROOT="./storage"
 APP_RUNTIME="web"
-NEXT_PUBLIC_APP_NAME="MxPage"
+NEXT_PUBLIC_APP_NAME="图灵绘画"
 
 # Optional: force every server-side Provider request through one gateway.
 LOCK_BASE_URL="https://your-private-openai-compatible-gateway/v1"
@@ -47,6 +47,6 @@ LOCK_BASE_URL="https://your-private-openai-compatible-gateway/v1"
 
 ## Brand
 
-Product: MxPage
+Product: 图灵绘画
 
-Publisher and maintainer: Lingju Huijing
+English name: Turing

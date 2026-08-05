@@ -5,13 +5,13 @@ import { prisma } from "@/lib/db/prisma";
 export type MxTaskType = TaskType;
 
 const globalTaskAbortControllers = globalThis as typeof globalThis & {
-  mxpageTaskAbortControllers?: Map<string, AbortController>;
+  turingTaskAbortControllers?: Map<string, AbortController>;
 };
 const taskAbortControllers =
-  globalTaskAbortControllers.mxpageTaskAbortControllers ?? new Map<string, AbortController>();
+  globalTaskAbortControllers.turingTaskAbortControllers ?? new Map<string, AbortController>();
 
 if (process.env.NODE_ENV !== "production") {
-  globalTaskAbortControllers.mxpageTaskAbortControllers = taskAbortControllers;
+  globalTaskAbortControllers.turingTaskAbortControllers = taskAbortControllers;
 }
 
 function toJsonValue(value: unknown) {

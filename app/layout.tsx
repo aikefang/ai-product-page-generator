@@ -12,13 +12,13 @@ import { ChunkReloadGuard } from "@/components/shared/chunk-reload-guard";
 import { ImagePreviewProvider } from "@/components/shared/image-preview-provider";
 
 export const metadata: Metadata = {
-  title: "MxPage",
+  title: "图灵绘画",
   icons: {
     icon: "/favicon.ico",
     shortcut: "/favicon.ico",
     apple: "/brand-icon.ico",
   },
-  description: "MxPage AI product page and social content generation workspace.",
+  description: "Turing AI painting and visual content generation workspace.",
 };
 
 export default function RootLayout({

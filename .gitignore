@@ -19,7 +19,10 @@
 /out/
 
 # production
-/build
+/build/*
+!/build/
+!/build/icon.ico
+!/build/icon.icns
 /dist-desktop
 /release
 

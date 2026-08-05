@@ -15,6 +15,8 @@ let splashWindow = null;
 let serverProcess = null;
 let serverUrl = null;
 let isQuitting = false;
+const APP_DISPLAY_NAME = "图灵绘画";
+const APP_ENGLISH_NAME = "Turing";
 
 function getWindowIcon() {
   return app.isPackaged
@@ -92,7 +94,7 @@ function getRuntimeEnv(runtime, port) {
     DATABASE_URL: toSqliteFileUrl(runtime.databasePath),
     STORAGE_ROOT: runtime.storageDir,
     APP_SECRET: runtime.appSecret,
-    NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME || "MxPage",
+    NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME || APP_DISPLAY_NAME,
   };
 }
 
@@ -209,7 +211,7 @@ async function startNextServer(runtime) {
     cwd: getStandaloneRoot(),
     env,
     stdio: ["ignore", "pipe", "pipe"],
-    serviceName: "MxPage Local Server",
+    serviceName: `${APP_ENGLISH_NAME} Local Server`,
   });
 
   let serverErrors = "";
@@ -225,7 +227,7 @@ async function startNextServer(runtime) {
   serverProcess.on("exit", (code) => {
     if (!isQuitting && code !== 0) {
       dialog.showErrorBox(
-        "MxPage 启动失败",
+        `${APP_DISPLAY_NAME} 启动失败`,
         serverErrors || `内置服务异常退出，退出码：${code}`
       );
       app.quit();
@@ -249,7 +251,7 @@ function createSplashWindow() {
     show: false,
     center: true,
     backgroundColor: "#111827",
-    title: "MxPage",
+    title: APP_DISPLAY_NAME,
     icon: getWindowIcon(),
     webPreferences: {
       contextIsolation: true,
@@ -267,7 +269,7 @@ function createSplashWindow() {
           http-equiv="Content-Security-Policy"
           content="default-src 'self' 'unsafe-inline' data:;"
         />
-        <title>MxPage</title>
+        <title>${APP_DISPLAY_NAME}</title>
         <style>
           * { box-sizing: border-box; }
           html, body {
@@ -340,8 +342,8 @@ function createSplashWindow() {
       <body>
         <div class="wrap">
           <div class="card">
-            <div class="title">MxPage</div>
-            <div class="desc">AI e-commerce detail page generation and editing workspace</div>
+            <div class="title">${APP_DISPLAY_NAME}</div>
+            <div class="desc">${APP_ENGLISH_NAME} AI painting and visual content generation workspace</div>
             <div class="status" id="status">正在启动应用...</div>
             <div class="bar"><div></div></div>
             <div class="foot">请稍候，正在初始化本地服务与数据环境</div>
@@ -388,7 +390,7 @@ function createMainWindow(url) {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: "#f5f5f5",
-    title: "MxPage",
+    title: APP_DISPLAY_NAME,
     icon: getWindowIcon(),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -484,7 +486,7 @@ app.on("activate", async () => {
 app.whenReady().then(() => {
   bootstrapDesktopApp().catch((error) => {
     dialog.showErrorBox(
-      "MxPage 启动失败",
+      `${APP_DISPLAY_NAME} 启动失败`,
       error instanceof Error ? error.message : "未知错误"
     );
     app.quit();

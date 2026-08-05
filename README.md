@@ -1,22 +1,22 @@
 <div align="center">
 
-# MxPage
+# 图灵绘画
 
 **AI 原生商品图文工作台**
 面向电商详情页、小红书图文、批量商品页面生成与本地私有化部署。
 
 <p>
-  <a href="https://github.com/ziguishian/MxPage/stargazers">
-    <img src="https://img.shields.io/github/stars/ziguishian/MxPage?style=flat-square&logo=github&color=111111" alt="GitHub stars" />
+  <a href="https://github.com/aikefang/ai-product-page-generator/stargazers">
+    <img src="https://img.shields.io/github/stars/aikefang/ai-product-page-generator?style=flat-square&logo=github&color=111111" alt="GitHub stars" />
   </a>
-  <a href="https://github.com/ziguishian/MxPage/network/members">
-    <img src="https://img.shields.io/github/forks/ziguishian/MxPage?style=flat-square&logo=github&color=111111" alt="GitHub forks" />
+  <a href="https://github.com/aikefang/ai-product-page-generator/network/members">
+    <img src="https://img.shields.io/github/forks/aikefang/ai-product-page-generator?style=flat-square&logo=github&color=111111" alt="GitHub forks" />
   </a>
-  <a href="https://github.com/ziguishian/MxPage/issues">
-    <img src="https://img.shields.io/github/issues/ziguishian/MxPage?style=flat-square&logo=github&color=111111" alt="GitHub issues" />
+  <a href="https://github.com/aikefang/ai-product-page-generator/issues">
+    <img src="https://img.shields.io/github/issues/aikefang/ai-product-page-generator?style=flat-square&logo=github&color=111111" alt="GitHub issues" />
   </a>
-  <a href="https://github.com/ziguishian/MxPage/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/ziguishian/MxPage?style=flat-square&color=111111" alt="License" />
+  <a href="https://github.com/aikefang/ai-product-page-generator/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/aikefang/ai-product-page-generator?style=flat-square&color=111111" alt="License" />
   </a>
 </p>
 
@@ -41,7 +41,7 @@
 
 ## 介绍
 
-**MxPage** 是由 **灵矩绘境** 出品并维护的 AI 商品图文工作台。
+**图灵绘画（Turing）** 是 AI 商品图文工作台。
 
 它可以帮助你围绕商品图片快速完成：
 
@@ -59,11 +59,11 @@
 
 ## 预览
 
-<img width="3840" height="2126" alt="MxPage Preview 1" src="https://github.com/user-attachments/assets/68f49a9f-875f-4397-ade6-426df6337134" />
+<img width="3840" height="2126" alt="Turing Preview 1" src="https://github.com/user-attachments/assets/68f49a9f-875f-4397-ade6-426df6337134" />
 
-<img width="3840" height="2126" alt="MxPage Preview 2" src="https://github.com/user-attachments/assets/95ff74e2-4b32-4f48-9d40-e1b26da1dcfa" />
+<img width="3840" height="2126" alt="Turing Preview 2" src="https://github.com/user-attachments/assets/95ff74e2-4b32-4f48-9d40-e1b26da1dcfa" />
 
-<img width="3840" height="2029" alt="MxPage Preview 3" src="https://github.com/user-attachments/assets/aadadb16-ed6e-4eab-8003-288b687339f6" />
+<img width="3840" height="2029" alt="Turing Preview 3" src="https://github.com/user-attachments/assets/aadadb16-ed6e-4eab-8003-288b687339f6" />
 
 ---
 
@@ -156,7 +156,7 @@ DATABASE_URL="file:./dev.db"
 APP_SECRET="replace-with-your-own-long-secret"
 STORAGE_ROOT="./storage"
 APP_RUNTIME="web"
-NEXT_PUBLIC_APP_NAME="MxPage"
+NEXT_PUBLIC_APP_NAME="图灵绘画"
 
 # 可选：设置后，服务端 Provider 请求会忽略 UI 中填写的 baseURL
 LOCK_BASE_URL="https://your-private-openai-compatible-gateway/v1"
@@ -170,7 +170,7 @@ LOCK_BASE_URL="https://your-private-openai-compatible-gateway/v1"
 
 ## Provider 配置说明
 
-MxPage 支持 OpenAI-compatible 模型服务。
+图灵绘画支持 OpenAI-compatible 模型服务。
 
 普通模式下，每个浏览器用户都可以在设置页中配置自己的：
 
@@ -223,7 +223,7 @@ LOCK_BASE_URL="https://your-private-openai-compatible-gateway/v1"
 
 ## 长任务机制
 
-为了避免长时间 HTTP 请求导致网关超时，MxPage 将复杂流程放入后台任务执行。
+为了避免长时间 HTTP 请求导致网关超时，图灵绘画将复杂流程放入后台任务执行。
 
 当前支持长任务的场景包括：
 
@@ -274,7 +274,7 @@ npm run dist:green
 
 ## 桌面端应用
 
-MxPage 的 Electron 桌面端复用同一套 Next.js 应用。
+图灵绘画的 Electron 桌面端复用同一套 Next.js 应用。
 
 桌面端运行数据会存储在系统应用数据目录中，macOS 与 Windows 打包均通过 `electron-builder` 配置。
 
@@ -283,7 +283,7 @@ MxPage 的 Electron 桌面端复用同一套 Next.js 应用。
 ## 项目结构
 
 ```txt
-MxPage
+Turing
 ├── app                 # Next.js 应用
 ├── components          # UI 组件
 ├── lib                 # 通用逻辑
@@ -327,7 +327,7 @@ MxPage
 
 ## 欢迎交流
 
-如果你对 MxPage、AI 商品图文生成、电商详情页自动化、小红书图文工作流或本地私有化部署感兴趣，欢迎交流。
+如果你对图灵绘画、AI 商品图文生成、电商详情页自动化、小红书图文工作流或本地私有化部署感兴趣，欢迎交流。
 
 <img width="888" height="1131" alt="交流二维码" src="https://github.com/user-attachments/assets/028cfd0b-a813-4655-9b49-aa9ab6619c7d" />
 
@@ -337,16 +337,16 @@ MxPage
 
 | 项目         | 信息                             |
 | ---------- | ------------------------------ |
-| 产品名        | MxPage                         |
-| 出品方        | 灵矩绘境                           |
-| Publisher  | MatrixInspire                  |
-| Maintainer | 灵矩绘境                           |
-| Copyright  | Copyright © 2026 灵矩绘境 · MxPage |
+| 产品名        | 图灵绘画                         |
+| 英文名        | Turing                         |
+| Publisher  | Turing                         |
+| Maintainer | Turing                         |
+| Copyright  | Copyright © 2026 Turing        |
 
 ---
 
 <div align="center">
 
-**MxPage · 让商品图文生成更快、更稳、更适合真实电商场景。**
+**图灵绘画 · 让商品图文生成更快、更稳、更适合真实电商场景。**
 
 </div>

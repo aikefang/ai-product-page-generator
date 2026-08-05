@@ -98,7 +98,7 @@ async function pruneProjectToPreviewConfig(projectId: string, snapshot: unknown)
 
 export async function listProjects() {
   const projects = await prisma.project.findMany({
-    where: { platform: { not: "__mxpage_system_task__" } },
+    where: { platform: { not: "__turing_system_task__" } },
     orderBy: { updatedAt: "desc" },
     include: {
       assets: {

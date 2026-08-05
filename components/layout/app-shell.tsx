@@ -24,8 +24,8 @@ import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-const appName = "MxPage";
-const SIDEBAR_STORAGE_KEY = "mxpage-sidebar-collapsed";
+const appName = "图灵绘画";
+const SIDEBAR_STORAGE_KEY = "turing-sidebar-collapsed";
 
 type NavItem = {
   href: string;

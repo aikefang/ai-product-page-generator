@@ -232,7 +232,9 @@ function formatTimeLabel(value: string | Date) {
 function readStoredCredentials() {
   if (typeof window === "undefined") return { apiKey: "", baseUrl: "" };
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(CLIENT_PROVIDER_STORAGE_KEY) || "{}") as { apiKey?: string; baseUrl?: string };
+    const parsed = JSON.parse(
+      window.localStorage.getItem(CLIENT_PROVIDER_STORAGE_KEY) || "{}",
+    ) as { apiKey?: string; baseUrl?: string };
     return {
       apiKey: parsed.apiKey ?? "",
       baseUrl: parsed.baseUrl ?? "",
