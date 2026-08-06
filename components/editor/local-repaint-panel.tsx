@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { type ReactNode, forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Brush, WandSparkles } from "lucide-react";
 
 import { ImageMaskCanvas, type ImageMaskCanvasHandle } from "@/components/editor/image-mask-canvas";
@@ -39,6 +39,8 @@ interface LocalRepaintPanelProps {
   imageUrl: string;
   title?: string;
   references?: LocalRepaintReference[];
+  referencePanel?: ReactNode;
+  versionPanel?: ReactNode;
   autoInstructionLoading?: boolean;
   onAutoGenerateInstruction?: () => void;
   className?: string;
@@ -50,6 +52,8 @@ export const LocalRepaintPanel = forwardRef<LocalRepaintPanelHandle, LocalRepain
       imageUrl,
       title,
       references = [],
+      referencePanel,
+      versionPanel,
       autoInstructionLoading = false,
       onAutoGenerateInstruction,
       className,
@@ -129,7 +133,7 @@ export const LocalRepaintPanel = forwardRef<LocalRepaintPanelHandle, LocalRepain
           </div>
         </div>
 
-        <div className="space-y-4 rounded-2xl border border-border bg-card p-4">
+        <div className="min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-card p-4">
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
               <Brush className="h-4 w-4" />
@@ -169,30 +173,34 @@ export const LocalRepaintPanel = forwardRef<LocalRepaintPanelHandle, LocalRepain
             />
           </div>
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <Label className="text-xs text-muted-foreground">已带入参考图</Label>
-              <span className="text-xs text-muted-foreground">{references.length} 张</span>
-            </div>
-            {references.length > 0 ? (
-              <div className="max-h-[180px] space-y-2 overflow-y-auto rounded-xl border border-border bg-muted/20 p-2">
-                {references.map((reference) => (
-                  <div key={reference.id} className="flex items-center gap-2 rounded-lg bg-background/70 p-1.5">
-                    <div className="h-11 w-11 shrink-0 overflow-hidden rounded-lg border border-border bg-muted">
-                      <img src={reference.imageUrl} alt={reference.title} className="h-full w-full object-cover" />
+          {referencePanel ?? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-xs text-muted-foreground">已带入参考图</Label>
+                <span className="text-xs text-muted-foreground">{references.length} 张</span>
+              </div>
+              {references.length > 0 ? (
+                <div className="max-h-[180px] space-y-2 overflow-y-auto rounded-xl border border-border bg-muted/20 p-2">
+                  {references.map((reference) => (
+                    <div key={reference.id} className="flex items-center gap-2 rounded-lg bg-background/70 p-1.5">
+                      <div className="h-11 w-11 shrink-0 overflow-hidden rounded-lg border border-border bg-muted">
+                        <img src={reference.imageUrl} alt={reference.title} className="h-full w-full object-cover" />
+                      </div>
+                      <p className="min-w-0 flex-1 truncate text-xs font-medium text-slate-700 dark:text-slate-200">
+                        {reference.title}
+                      </p>
                     </div>
-                    <p className="min-w-0 flex-1 truncate text-xs font-medium text-slate-700 dark:text-slate-200">
-                      {reference.title}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
-                当前没有勾选参考图。局部重绘会只基于当前底图和涂抹区域处理。
-              </div>
-            )}
-          </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
+                  当前没有勾选参考图。局部重绘会只基于当前底图和涂抹区域处理。
+                </div>
+              )}
+            </div>
+          )}
+
+          {versionPanel}
 
           <div className="rounded-xl border border-border bg-muted/40 p-3 text-xs leading-5 text-muted-foreground">
             提交后会把涂抹区域转换成局部重绘 mask，并保存为新的版本。原版本仍会保留，可以在版本历史里切换回来。

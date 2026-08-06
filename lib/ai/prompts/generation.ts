@@ -157,6 +157,7 @@ export function buildLocalInpaintPrompt(
     "Localized inpainting edit.",
     "The first image is the base image. A mask image is attached to define the editable area.",
     "Only the transparent area of the mask may be regenerated. All opaque/unmasked pixels must be preserved as closely as possible.",
+    "Keep the exact original canvas size, aspect ratio, framing, and composition. Do not crop, resize, extend, zoom, rotate, or reframe the base image.",
     "Do not redesign the whole image. Do not change crop, layout, typography, labels, background, product position, lighting, color palette, or any unmasked object.",
     "Blend the edited area naturally into its surroundings, matching existing perspective, material, shadows, edges, sharpness, and noise.",
     referenceAssets.length

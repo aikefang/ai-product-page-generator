@@ -24,6 +24,7 @@ export const inpaintInstructionRequestSchema = z.object({
         cropImage: z.string().startsWith("data:image/").optional().nullable(),
       }),
     )
-    .min(1)
-    .max(12),
+    .max(12)
+    .optional()
+    .default([]),
 });

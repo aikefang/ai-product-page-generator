@@ -685,6 +685,59 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     }
   };
 
+  const requestLocalRepaintInstruction = async (
+    references: Array<{
+      assetId: string;
+      mask: string;
+      previewImage?: string | null;
+      cropImage?: string | null;
+    }> = [],
+    closeReferenceMaskDrawer = false,
+  ) => {
+    if (!selectedSection) return;
+
+    const baseMaskPayload = localRepaintPanelRef.current?.getMaskPayload();
+    if (!baseMaskPayload) {
+      toast.error("请先在当前图上涂抹需要局部重绘的区域。");
+      return;
+    }
+
+    setAutoInstructionGenerating(true);
+    try {
+      const nextReferenceCropImages = references
+        .map((reference) => reference.cropImage)
+        .filter((image): image is string => Boolean(image));
+      const response = await fetch(`/api/projects/${project.id}/sections/${selectedSection.id}/inpaint-instruction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseMask: baseMaskPayload.mask,
+          basePreviewImage: baseMaskPayload.previewImage,
+          references,
+        }),
+      });
+      const payload = await response.json();
+      if (!payload.success || !payload.data?.instruction) {
+        throw new Error(payload.error?.message ?? "自动生成修改说明失败");
+      }
+
+      setReferenceCropImages(nextReferenceCropImages);
+      localRepaintPanelRef.current?.setInstruction(payload.data.instruction);
+      if (closeReferenceMaskDrawer) {
+        setReferenceMaskOpen(false);
+      }
+      toast.success(
+        references.length > 0
+          ? "已结合参考图生成局部修改说明，可以继续微调后开始重绘。"
+          : "已根据原图涂抹区域生成局部修改说明，可以继续微调后开始重绘。",
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "自动生成修改说明失败");
+    } finally {
+      setAutoInstructionGenerating(false);
+    }
+  };
+
   const openAutoInstructionDrawer = () => {
     const maskValidationMessage = localRepaintPanelRef.current?.getMaskValidationMessage();
     if (maskValidationMessage) {
@@ -693,7 +746,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     }
 
     if (selectedReferenceAssets.length === 0) {
-      toast.error("请先勾选至少一张参考图。");
+      void requestLocalRepaintInstruction([]);
       return;
     }
 
@@ -721,34 +774,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       return;
     }
 
-    setAutoInstructionGenerating(true);
-    try {
-      const nextReferenceCropImages = references
-        .map((reference) => reference.cropImage)
-        .filter((image): image is string => Boolean(image));
-      const response = await fetch(`/api/projects/${project.id}/sections/${selectedSection.id}/inpaint-instruction`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          baseMask: baseMaskPayload.mask,
-          basePreviewImage: baseMaskPayload.previewImage,
-          references,
-        }),
-      });
-      const payload = await response.json();
-      if (!payload.success || !payload.data?.instruction) {
-        throw new Error(payload.error?.message ?? "自动生成修改说明失败");
-      }
-
-      setReferenceCropImages(nextReferenceCropImages);
-      localRepaintPanelRef.current?.setInstruction(payload.data.instruction);
-      setReferenceMaskOpen(false);
-      toast.success("已生成局部修改说明，可以继续微调后开始重绘。");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "自动生成修改说明失败");
-    } finally {
-      setAutoInstructionGenerating(false);
-    }
+    await requestLocalRepaintInstruction(references, true);
   };
 
   const translateGeneratedDetailPage = async () => {
@@ -825,6 +851,163 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       sections: current.sections.map((section: any) => (section.id === selectedSection?.id ? { ...section, [key]: value } : section)),
     }));
   };
+
+  const toggleReferenceAsset = (assetId: string, checked: boolean) => {
+    setCheckedReferences((current) => (checked ? [...new Set([...current, assetId])] : current.filter((id) => id !== assetId)));
+  };
+
+  const renderReferenceSelector = (options?: { embedded?: boolean }) => {
+    const embedded = options?.embedded ?? false;
+    const selectedCount = referenceAssets.filter((asset: any) => checkedReferences.includes(asset.id)).length;
+
+    return (
+      <div className={embedded ? "space-y-2" : compactFieldClass}>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            {embedded ? (
+              <h3 className="text-sm font-semibold">参考图</h3>
+            ) : (
+              <Label className="text-xs text-muted-foreground">参考图</Label>
+            )}
+            {embedded ? <Badge variant="outline">{selectedCount} 张已勾选</Badge> : null}
+          </div>
+          <>
+            {!embedded ? (
+              <Input
+                ref={referenceUploadInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={uploadReferenceImages}
+                className="hidden"
+              />
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              className={compactActionButtonClass}
+              onClick={() => referenceUploadInputRef.current?.click()}
+              disabled={referenceUploading || selectedSectionIsGenerating || Boolean(runningPageAction)}
+            >
+              {referenceUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+              {referenceUploading ? "上传中..." : "添加参考图"}
+            </Button>
+          </>
+        </div>
+        {referenceAssets.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
+            当前没有可选参考图。局部重绘会只基于当前底图和涂抹区域处理。
+          </p>
+        ) : (
+          <div className={`${embedded ? "max-h-[270px] overflow-y-auto bg-background/70" : ""} space-y-1.5 rounded-xl border border-border p-2.5`}>
+            {referenceAssets.map((asset: any) => (
+              <div
+                key={asset.id}
+                className="flex min-h-12 items-center gap-2 rounded-lg border border-transparent px-2 py-1 transition-colors hover:border-border hover:bg-muted/40"
+              >
+                <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch">
+                  <input
+                    type="checkbox"
+                    checked={checkedReferences.includes(asset.id)}
+                    disabled={selectedSectionIsGenerating || Boolean(runningPageAction)}
+                    onChange={(event) => toggleReferenceAsset(asset.id, event.target.checked)}
+                  />
+                  <span className="truncate text-sm">{assetTypeLabels[asset.type] ?? asset.fileName}</span>
+                </label>
+                <button
+                  type="button"
+                  className="h-10 w-10 shrink-0 overflow-hidden rounded-md border border-border bg-muted transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  title={`预览${asset.fileName}`}
+                  aria-label={`预览${asset.fileName}`}
+                  onClick={() =>
+                    openImagePreview({
+                      url: asset.url,
+                      title: asset.fileName,
+                      meta: assetTypeLabels[asset.type] ?? asset.type,
+                    })
+                  }
+                >
+                  <img src={asset.url} alt={asset.fileName} className="h-full w-full object-cover" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-xs leading-5 text-muted-foreground">
+          系统会自动把主商品图作为产品锚点，这里勾选的是额外参考图，会一起以 base64 方式发送给 AI。
+        </p>
+      </div>
+    );
+  };
+
+  const renderVersionHistory = (options?: { embedded?: boolean }) => {
+    const embedded = options?.embedded ?? false;
+    const versions = selectedSection?.versions ?? [];
+
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold">版本历史</h3>
+          <Badge variant="outline">{versions.length} 个版本</Badge>
+        </div>
+        {versions.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
+            当前模块还没有版本历史。
+          </p>
+        ) : (
+          <div className={`${embedded ? "max-h-[220px] overflow-y-auto pr-1" : ""} space-y-2`}>
+            {versions.map((version: any) => (
+              <div key={version.id} className="rounded-xl border border-border bg-background/70 p-2.5">
+                <div className="grid grid-cols-[minmax(0,1fr)_48px_auto] items-center gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">v{version.versionNumber}</p>
+                    <p className="text-xs text-muted-foreground">{version.isActive ? "当前生效版本" : "历史版本"}</p>
+                  </div>
+                  {version.imageUrl ? (
+                    <button
+                      type="button"
+                      className="h-12 w-12 overflow-hidden rounded-xl border border-border bg-muted transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      title={`预览 v${version.versionNumber}`}
+                      aria-label={`预览 v${version.versionNumber}`}
+                      onClick={() =>
+                        openImagePreview({
+                          url: version.imageUrl,
+                          title: `${selectedSection?.title ?? "当前模块"} v${version.versionNumber}`,
+                          meta: version.isActive ? "当前生效版本" : "历史版本",
+                        })
+                      }
+                    >
+                      <img
+                        src={version.imageUrl}
+                        alt={`${selectedSection?.title ?? "当前模块"} v${version.versionNumber}`}
+                        className="h-full w-full object-cover"
+                      />
+                    </button>
+                  ) : (
+                    <div className="h-12 w-12 rounded-xl border border-dashed border-border bg-muted/40" />
+                  )}
+                  {!version.isActive ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 px-2.5 text-xs"
+                      disabled={selectedSectionIsGenerating || Boolean(runningPageAction)}
+                      onClick={() => activateVersion(version.id)}
+                    >
+                      {embedded ? "恢复" : "设为当前"}
+                    </Button>
+                  ) : (
+                    <Badge variant="success">当前</Badge>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="grid min-h-0 gap-5 xl:grid-cols-[300px_minmax(0,1fr)_360px] xl:items-stretch">
       <Card className="flex min-h-0 min-w-0 flex-col xl:h-[920px]">
@@ -1199,121 +1382,9 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                 <p className="text-xs text-muted-foreground">系统会要求图像模型把标题、卖点和 CTA 直接生成进图片中，而不是在页面外拼接文字。</p>
               </div>
 
-              <div className={compactFieldClass}>
-                <div className="flex items-center justify-between gap-2">
-                  <Label className="text-xs text-muted-foreground">参考图</Label>
-                  <>
-                    <Input
-                      ref={referenceUploadInputRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      onChange={uploadReferenceImages}
-                      className="hidden"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className={compactActionButtonClass}
-                      onClick={() => referenceUploadInputRef.current?.click()}
-                      disabled={referenceUploading || selectedSectionIsGenerating || Boolean(runningPageAction)}
-                    >
-                      {referenceUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
-                      {referenceUploading ? "上传中..." : "添加参考图"}
-                    </Button>
-                  </>
-                </div>
-                {referenceAssets.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">当前没有可选参考图</p>
-                ) : (
-                  <div className="space-y-1.5 rounded-xl border border-border p-2.5">
-                    {referenceAssets.map((asset: any) => (
-                      <div
-                        key={asset.id}
-                        className="flex min-h-12 items-center gap-2 rounded-lg border border-transparent px-2 py-1 transition-colors hover:border-border hover:bg-muted/40"
-                      >
-                        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 self-stretch">
-                          <input
-                            type="checkbox"
-                            checked={checkedReferences.includes(asset.id)}
-                            onChange={(event) => {
-                              setCheckedReferences((current) =>
-                                event.target.checked ? [...current, asset.id] : current.filter((id) => id !== asset.id),
-                              );
-                            }}
-                          />
-                          <span className="truncate text-sm">{assetTypeLabels[asset.type] ?? asset.fileName}</span>
-                        </label>
-                        <button
-                          type="button"
-                          className="h-10 w-10 shrink-0 overflow-hidden rounded-md border border-border bg-muted transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                          title={`预览${asset.fileName}`}
-                          aria-label={`预览${asset.fileName}`}
-                          onClick={() =>
-                            openImagePreview({
-                              url: asset.url,
-                              title: asset.fileName,
-                              meta: assetTypeLabels[asset.type] ?? asset.type,
-                            })
-                          }
-                        >
-                          <img src={asset.url} alt={asset.fileName} className="h-full w-full object-cover" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <p className="text-xs text-muted-foreground">系统会自动把主商品图作为产品锚点，这里勾选的是额外参考图，会一起以 base64 方式发送给 AI。</p>
-              </div>
+              {renderReferenceSelector()}
 
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">版本历史</h3>
-                  <Badge variant="outline">{selectedSection.versions?.length ?? 0} 个版本</Badge>
-                </div>
-                <div className="space-y-2">
-                  {(selectedSection.versions ?? []).map((version: any) => (
-                    <div key={version.id} className="rounded-xl border border-border bg-background/70 p-2.5">
-                      <div className="grid grid-cols-[minmax(0,1fr)_48px_auto] items-center gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium">v{version.versionNumber}</p>
-                          <p className="text-xs text-muted-foreground">{version.isActive ? "当前生效版本" : "历史版本"}</p>
-                        </div>
-                        {version.imageUrl ? (
-                          <button
-                            type="button"
-                            className="h-12 w-12 overflow-hidden rounded-xl border border-border bg-muted transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                            title={`预览 v${version.versionNumber}`}
-                            aria-label={`预览 v${version.versionNumber}`}
-                            onClick={() =>
-                              openImagePreview({
-                                url: version.imageUrl,
-                                title: `${selectedSection.title} v${version.versionNumber}`,
-                                meta: version.isActive ? "当前生效版本" : "历史版本",
-                              })
-                            }
-                          >
-                            <img
-                              src={version.imageUrl}
-                              alt={`${selectedSection.title} v${version.versionNumber}`}
-                              className="h-full w-full object-cover"
-                            />
-                          </button>
-                        ) : (
-                          <div className="h-12 w-12 rounded-xl border border-dashed border-border bg-muted/40" />
-                        )}
-                        {!version.isActive ? (
-                          <Button size="sm" variant="outline" className="h-8 px-2.5 text-xs" onClick={() => activateVersion(version.id)}>
-                            设为当前
-                          </Button>
-                        ) : (
-                          <Badge variant="success">当前</Badge>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              {renderVersionHistory()}
             </>
           )}
         </CardContent>
@@ -1325,9 +1396,9 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         width={1000}
         closeOnOverlayClick={false}
         confirmContent="开始重绘"
+        cancelContent="关闭"
         loading={selectedSectionAction === "inpaint"}
         confirmDisabled={!hasGeneratedImage || selectedSectionIsGenerating || Boolean(runningPageAction)}
-        cancelDisabled={selectedSectionAction === "inpaint"}
         onCancel={() => setLocalRepaintOpen(false)}
         onConfirm={runLocalRepaint}
       >
@@ -1337,6 +1408,8 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
             imageUrl={selectedSection.imageUrl}
             title={selectedSection.title}
             references={selectedReferenceAssets}
+            referencePanel={renderReferenceSelector({ embedded: true })}
+            versionPanel={renderVersionHistory({ embedded: true })}
             autoInstructionLoading={autoInstructionGenerating}
             onAutoGenerateInstruction={openAutoInstructionDrawer}
           />

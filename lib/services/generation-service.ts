@@ -973,10 +973,6 @@ export async function generateLocalInpaintInstruction(
     throw new Error("当前模块还没有可用于生成说明的底图。");
   }
 
-  if (input.references.length === 0) {
-    throw new Error("请至少选择并涂抹一张参考图。");
-  }
-
   const { provider, adapter } = await getProviderAdapter();
   const modelCandidates = buildVisionTextModelCandidates(provider);
   const model = modelCandidates[0] ?? null;
@@ -985,12 +981,14 @@ export async function generateLocalInpaintInstruction(
   }
 
   const requestedReferenceIds = input.references.map((reference) => reference.assetId);
-  const referenceAssets = await prisma.productAsset.findMany({
-    where: {
-      projectId,
-      id: { in: requestedReferenceIds },
-    },
-  });
+  const referenceAssets = requestedReferenceIds.length > 0
+    ? await prisma.productAsset.findMany({
+        where: {
+          projectId,
+          id: { in: requestedReferenceIds },
+        },
+      })
+    : [];
   const orderedReferenceAssets = requestedReferenceIds
     .map((assetId) => referenceAssets.find((asset) => asset.id === assetId))
     .filter(Boolean) as AssetRecord[];
@@ -1017,18 +1015,27 @@ export async function generateLocalInpaintInstruction(
     pushImage(input.references[index]?.mask, `参考图 ${index + 1} 的 mask；透明区域是用户想借鉴的局部细节。`);
     pushImage(input.references[index]?.cropImage, `参考图 ${index + 1} 的涂抹区域自动裁剪图；这是最终局部重绘时需要优先参考的局部细节。`);
   });
+  const hasReferenceRegions = orderedReferenceAssets.length > 0;
 
   const userPrompt = [
     "你是电商图片局部重绘的修图说明助手。你的任务不是生成图片，而是根据用户涂抹区域写一段可直接用于局部重绘模型的中文修改说明。",
+    hasReferenceRegions
+      ? "用户同时提供了参考图涂抹区域，请结合参考图局部细节生成修改说明。"
+      : "用户没有勾选参考图。请只根据当前原图、红色涂抹位置、模块标题/目标/文案和周围上下文，自动判断涂抹区域最可能需要修复或优化什么，并生成明确可执行的修改说明。",
     "",
     "输入图片顺序：",
     ...imageDescriptions,
     "",
     "写说明时必须遵守：",
     "- 只描述当前原图涂抹区域内应该如何修改。",
-    "- 明确引用参考图中被涂抹的局部细节，例如形状、边缘、材质、孔位、弯折角度、颜色或纹理。",
-    "- 如果提供了参考图涂抹区域裁剪图，优先根据裁剪图描述需要迁移到当前原图涂抹区域的细节。",
+    hasReferenceRegions
+      ? "- 明确引用参考图中被涂抹的局部细节，例如形状、边缘、材质、孔位、弯折角度、颜色或纹理。"
+      : "- 没有参考图时，不要编造外部参考；要根据原图涂抹处的内容和周围上下文判断：可以修复瑕疵、补全缺失、统一材质/边缘/光影、优化文字或删除异常元素。",
+    hasReferenceRegions
+      ? "- 如果提供了参考图涂抹区域裁剪图，优先根据裁剪图描述需要迁移到当前原图涂抹区域的细节。"
+      : "- 说明要尽量具体，避免只写“优化这里”；需要点明要修复的对象、边缘、纹理、文字、光影或背景融合方式。",
     "- 明确要求保持未涂抹区域不变，包括构图、背景、文字、产品位置、光影、手部、道具和排版。",
+    "- 明确要求保持原图尺寸、比例、画布和构图不变，不要裁切、不要缩放、不要扩图、不要改变非涂抹区域像素内容。",
     "- 不要写成整图重绘，不要让模型改变画面整体风格。",
     "- 输出一句或两句中文，适合直接填入“局部修改说明”。",
     "",
