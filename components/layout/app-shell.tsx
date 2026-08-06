@@ -14,6 +14,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Menu,
+  WandSparkles,
   Settings2,
   X,
   type LucideIcon,
@@ -49,6 +50,13 @@ const navItems: NavItem[] = [
     description: "模型供应商与密钥配置",
     icon: KeyRound,
     match: (pathname) => pathname.startsWith("/settings/providers"),
+  },
+  {
+    href: "/ai-toolbox",
+    label: "AI工具箱",
+    description: "独立图像生成与编辑工具",
+    icon: WandSparkles,
+    match: (pathname) => pathname.startsWith("/ai-toolbox"),
   },
   {
     href: "/monitor/usage",
