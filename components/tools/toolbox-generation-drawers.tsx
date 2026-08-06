@@ -1,0 +1,699 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { toast } from "sonner";
+
+import { ImageUploadDropzone } from "@/components/shared/image-upload-dropzone";
+import { Button } from "@/components/ui/button";
+import { DrawerDialog } from "@/components/ui/drawer-dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { fileToBase64Payload } from "@/lib/utils/base64-upload";
+
+type RunMode = "sync" | "background";
+
+type ToolboxTaskPayload = {
+  id: string;
+  status: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELED";
+  outputPayload?: ToolboxResult | null;
+  errorMessage?: string | null;
+};
+
+type ToolboxResult = {
+  imageUrl?: string;
+  recordId?: string | null;
+  model?: string;
+  revisedPrompt?: string;
+  updatedAt?: string;
+};
+
+type ToolboxVersion = {
+  id: string;
+  title: string;
+  imageUrl: string;
+  model?: string;
+  createdAt: string;
+  isActive: boolean;
+};
+
+type ExpandEdges = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+};
+
+type InitialToolboxImage = {
+  url: string;
+  title?: string;
+};
+
+async function fileToDataUrl(file: File) {
+  const payload = await fileToBase64Payload(file);
+  return `data:${payload.mimeType};base64,${payload.base64Data}`;
+}
+
+async function filesToDataUrls(files: File[]) {
+  return Promise.all(files.map((file) => fileToDataUrl(file)));
+}
+
+async function imageUrlToFile(image: InitialToolboxImage, fallbackName: string) {
+  const response = await fetch(image.url);
+  const blob = await response.blob();
+  const mimeType = blob.type || "image/png";
+  const extension = mimeType.includes("jpeg")
+    ? "jpg"
+    : mimeType.includes("webp")
+      ? "webp"
+      : mimeType.includes("gif")
+        ? "gif"
+        : "png";
+  const fileName = image.title?.includes(".") ? image.title : `${image.title ?? fallbackName}.${extension}`;
+  return new File([blob], fileName, {
+    type: mimeType,
+    lastModified: Date.now(),
+  });
+}
+
+function clampPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function VersionPanel({
+  versions,
+  onActivate,
+}: {
+  versions: ToolboxVersion[];
+  onActivate: (version: ToolboxVersion) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">历史版本</h3>
+        <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+          {versions.length} 个版本
+        </span>
+      </div>
+      {versions.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">
+          生成结果会保存在这里，可以直接恢复到某个版本。
+        </p>
+      ) : (
+        <div className="max-h-[240px] space-y-2 overflow-y-auto pr-1">
+          {versions.map((version) => (
+            <div key={version.id} className="rounded-xl border border-border bg-background/70 p-2.5">
+              <div className="grid grid-cols-[minmax(0,1fr)_52px_auto] items-center gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{version.title}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {version.model ? `模型：${version.model}` : "AI工具箱生成"}
+                  </p>
+                </div>
+                <div className="h-12 w-12 overflow-hidden rounded-xl border border-border bg-muted">
+                  <img src={version.imageUrl} alt={version.title} className="h-full w-full object-cover" />
+                </div>
+                {version.isActive ? (
+                  <span className="rounded-full bg-emerald-500 px-2 py-1 text-xs text-white">当前</span>
+                ) : (
+                  <Button type="button" size="sm" variant="outline" className="h-8 px-2.5 text-xs" onClick={() => onActivate(version)}>
+                    恢复
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function useToolboxRunner({
+  endpoint,
+  resultTitlePrefix,
+  onResultImage,
+}: {
+  endpoint: string;
+  resultTitlePrefix: string;
+  onResultImage?: (imageUrl: string) => void;
+}) {
+  const [runningMode, setRunningMode] = useState<RunMode | null>(null);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [versions, setVersions] = useState<ToolboxVersion[]>([]);
+
+  const applyResult = useCallback((result: ToolboxResult) => {
+    if (!result.imageUrl) return;
+    const nextNumber = versions.length + 1;
+    const version: ToolboxVersion = {
+      id: result.recordId ?? `${Date.now()}-${nextNumber}`,
+      title: `${resultTitlePrefix} v${nextNumber}`,
+      imageUrl: result.imageUrl,
+      model: result.model,
+      createdAt: result.updatedAt ?? new Date().toISOString(),
+      isActive: true,
+    };
+    setVersions((current) => [version, ...current.map((item) => ({ ...item, isActive: false }))]);
+    onResultImage?.(result.imageUrl);
+  }, [onResultImage, resultTitlePrefix, versions.length]);
+
+  useEffect(() => {
+    if (!taskId) return;
+
+    let disposed = false;
+    const pollTask = async () => {
+      try {
+        const response = await fetch(`/api/tasks/${taskId}`, { cache: "no-store" });
+        const payload = await response.json();
+        const task = payload.success ? (payload.data as ToolboxTaskPayload | null) : null;
+        if (disposed || !task) return;
+        if (task.status === "PENDING" || task.status === "RUNNING") return;
+
+        setTaskId(null);
+        setRunningMode(null);
+        if (task.status === "SUCCESS" && task.outputPayload?.imageUrl) {
+          applyResult(task.outputPayload);
+          toast.success("后台生成已完成，结果已更新到弹窗");
+          return;
+        }
+        toast.error(task.errorMessage ?? "后台生成失败，请重试");
+      } catch {
+        // 短暂轮询错误不打断后台任务。
+      }
+    };
+
+    void pollTask();
+    const timer = window.setInterval(pollTask, 2000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [applyResult, taskId]);
+
+  const run = async (mode: RunMode, body: Record<string, unknown>) => {
+    setRunningMode(mode);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, executionMode: mode }),
+      });
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error?.message ?? "生成失败");
+      }
+
+      if (mode === "background") {
+        const task = payload.data as ToolboxTaskPayload;
+        if (!task?.id) throw new Error("后台任务创建失败。");
+        setTaskId(task.id);
+        toast.success("后台任务已创建，可以关闭弹窗或继续处理其他内容");
+        return true;
+      }
+
+      applyResult(payload.data as ToolboxResult);
+      toast.success("生成完成，结果已更新到弹窗");
+      return true;
+    } catch (error) {
+      setRunningMode(null);
+      toast.error(error instanceof Error ? error.message : "生成失败");
+      return false;
+    } finally {
+      if (mode === "sync") setRunningMode(null);
+    }
+  };
+
+  const activateVersion = (version: ToolboxVersion) => {
+    setVersions((current) => current.map((item) => ({ ...item, isActive: item.id === version.id })));
+    onResultImage?.(version.imageUrl);
+    toast.success("已恢复到所选版本");
+  };
+
+  return {
+    runningMode,
+    backgroundRunning: Boolean(taskId) || runningMode === "background",
+    versions,
+    run,
+    activateVersion,
+  };
+}
+
+function DrawerFooter({
+  closeLabel = "关闭",
+  syncLabel,
+  backgroundLabel,
+  runningMode,
+  backgroundRunning,
+  disabled,
+  onClose,
+  onRun,
+}: {
+  closeLabel?: string;
+  syncLabel: string;
+  backgroundLabel: string;
+  runningMode: RunMode | null;
+  backgroundRunning: boolean;
+  disabled?: boolean;
+  onClose: () => void;
+  onRun: (mode: RunMode) => void;
+}) {
+  const running = runningMode !== null || backgroundRunning;
+  return (
+    <>
+      <Button type="button" variant="outline" onClick={onClose} className="w-[100px]">
+        {closeLabel}
+      </Button>
+      <Button type="button" onClick={() => onRun("background")} disabled={disabled || running} variant="outline" className="w-[110px]">
+        {backgroundRunning ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+        {backgroundRunning ? "生成中..." : backgroundLabel}
+      </Button>
+      <Button type="button" onClick={() => onRun("sync")} disabled={disabled || running} className="w-[110px]">
+        {runningMode === "sync" ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+        {runningMode === "sync" ? "处理中..." : syncLabel}
+      </Button>
+    </>
+  );
+}
+
+function OutpaintPreview({
+  imageUrl,
+  expand,
+  onExpandChange,
+}: {
+  imageUrl: string;
+  expand: ExpandEdges;
+  onExpandChange: (expand: ExpandEdges) => void;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    side: keyof ExpandEdges;
+    startX: number;
+    startY: number;
+    startValue: number;
+  } | null>(null);
+
+  const startDrag = (side: keyof ExpandEdges) => (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    dragRef.current = {
+      side,
+      startX: event.clientX,
+      startY: event.clientY,
+      startValue: expand[side],
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    const root = rootRef.current;
+    if (!drag || !root) return;
+
+    const rect = root.getBoundingClientRect();
+    const deltaX = ((event.clientX - drag.startX) / Math.max(rect.width, 1)) * 100;
+    const deltaY = ((event.clientY - drag.startY) / Math.max(rect.height, 1)) * 100;
+    const next = { ...expand };
+    if (drag.side === "left") next.left = clampPercent(drag.startValue - deltaX);
+    if (drag.side === "right") next.right = clampPercent(drag.startValue + deltaX);
+    if (drag.side === "top") next.top = clampPercent(drag.startValue - deltaY);
+    if (drag.side === "bottom") next.bottom = clampPercent(drag.startValue + deltaY);
+    onExpandChange(next);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div
+        ref={rootRef}
+        onPointerMove={handleMove}
+        onPointerUp={() => {
+          dragRef.current = null;
+        }}
+        onPointerCancel={() => {
+          dragRef.current = null;
+        }}
+        className="relative mx-auto flex max-w-[680px] items-center justify-center rounded-3xl border border-dashed border-teal-300 bg-[linear-gradient(45deg,rgba(20,184,166,0.08)_25%,transparent_25%,transparent_50%,rgba(20,184,166,0.08)_50%,rgba(20,184,166,0.08)_75%,transparent_75%,transparent)] bg-[length:22px_22px] p-8 dark:border-teal-300/30"
+        style={{
+          paddingTop: `${24 + expand.top * 0.9}px`,
+          paddingRight: `${24 + expand.right * 0.9}px`,
+          paddingBottom: `${24 + expand.bottom * 0.9}px`,
+          paddingLeft: `${24 + expand.left * 0.9}px`,
+        }}
+      >
+        <img src={imageUrl} alt="扩图原图" className="max-h-[520px] max-w-full rounded-2xl border border-border bg-background object-contain shadow-lg" />
+        {(["top", "right", "bottom", "left"] as Array<keyof ExpandEdges>).map((side) => (
+          <button
+            key={side}
+            type="button"
+            onPointerDown={startDrag(side)}
+            className={`absolute rounded-full border border-teal-500 bg-white px-3 py-1 text-xs font-semibold text-teal-700 shadow-md transition hover:bg-teal-50 dark:bg-slate-950 dark:text-teal-200 ${
+              side === "top"
+                ? "left-1/2 top-3 -translate-x-1/2 cursor-ns-resize"
+                : side === "bottom"
+                  ? "bottom-3 left-1/2 -translate-x-1/2 cursor-ns-resize"
+                  : side === "left"
+                    ? "left-3 top-1/2 -translate-y-1/2 cursor-ew-resize"
+                    : "right-3 top-1/2 -translate-y-1/2 cursor-ew-resize"
+            }`}
+          >
+            {side === "top" ? "上" : side === "right" ? "右" : side === "bottom" ? "下" : "左"} {expand[side]}%
+          </button>
+        ))}
+      </div>
+      <p className="text-center text-xs text-muted-foreground">
+        拖拽四边按钮调整扩展方向和比例，绿色棋盘区域表示需要 AI 延展的画布。
+      </p>
+    </div>
+  );
+}
+
+export function SmartOutpaintDrawer({
+  open,
+  onOpenChange,
+  initialImage,
+  initialSeed,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initialImage?: InitialToolboxImage | null;
+  initialSeed?: number;
+}) {
+  const [files, setFiles] = useState<File[]>([]);
+  const [imageUrl, setImageUrl] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [expand, setExpand] = useState<ExpandEdges>({ top: 20, right: 20, bottom: 20, left: 20 });
+  const runner = useToolboxRunner({
+    endpoint: "/api/ai-toolbox/outpaint",
+    resultTitlePrefix: "智能扩图",
+    onResultImage: setImageUrl,
+  });
+
+  useEffect(() => {
+    if (!open || !initialImage?.url) return;
+    let disposed = false;
+    setImageUrl(initialImage.url);
+    void imageUrlToFile(initialImage, "outpaint-source")
+      .then((file) => {
+        if (!disposed) {
+          setFiles([file]);
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setFiles([]);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [initialImage?.url, initialSeed, open]);
+
+  useEffect(() => {
+    if (!files[0]) {
+      if (!initialImage?.url) {
+        setImageUrl("");
+      }
+      return;
+    }
+    let disposed = false;
+    void fileToDataUrl(files[0]).then((url) => {
+      if (!disposed) setImageUrl(url);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [files, initialImage?.url]);
+
+  const submit = async (mode: RunMode) => {
+    if (!imageUrl) {
+      toast.error("请先上传一张需要扩图的原图。");
+      return;
+    }
+    await runner.run(mode, { image: imageUrl, prompt, expand });
+  };
+
+  return (
+    <DrawerDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="智能扩图"
+      width={1100}
+      closeOnOverlayClick={false}
+      footer={
+        <DrawerFooter
+          syncLabel="立即扩图"
+          backgroundLabel="后台扩图"
+          runningMode={runner.runningMode}
+          backgroundRunning={runner.backgroundRunning}
+          disabled={!imageUrl}
+          onClose={() => onOpenChange(false)}
+          onRun={submit}
+        />
+      }
+    >
+      <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-h-0 overflow-auto rounded-2xl border border-border bg-muted/20 p-4">
+          {imageUrl ? (
+            <OutpaintPreview imageUrl={imageUrl} expand={expand} onExpandChange={setExpand} />
+          ) : (
+            <ImageUploadDropzone
+              id="toolbox-outpaint-base"
+              files={files}
+              onFilesChange={setFiles}
+              acceptPagePaste
+              title="上传需要扩图的原图"
+              description="支持点击选择、拖拽上传、复制图片文件后粘贴。"
+              minHeightClassName="min-h-[520px]"
+            />
+          )}
+        </div>
+        <div className="min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-card p-4">
+          {imageUrl ? (
+            <ImageUploadDropzone
+              id="toolbox-outpaint-replace"
+              files={files}
+              onFilesChange={setFiles}
+              acceptPagePaste
+              title="更换原图"
+              description="重新上传后会以新图为扩图基础。"
+              minHeightClassName="min-h-[160px]"
+            />
+          ) : null}
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">补充提示词（非必填）</Label>
+            <Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：向右扩展出更多咖啡吧台空间，保持暖色灯光和真实质感。" className="min-h-[140px]" />
+          </div>
+          <VersionPanel versions={runner.versions} onActivate={runner.activateVersion} />
+        </div>
+      </div>
+    </DrawerDialog>
+  );
+}
+
+export function ImageToImageDrawer({
+  open,
+  onOpenChange,
+  initialReferenceImages = [],
+  initialSeed,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initialReferenceImages?: InitialToolboxImage[];
+  initialSeed?: number;
+}) {
+  const [referenceFiles, setReferenceFiles] = useState<File[]>([]);
+  const [prompt, setPrompt] = useState("");
+  const [latestImage, setLatestImage] = useState("");
+  const runner = useToolboxRunner({
+    endpoint: "/api/ai-toolbox/image-to-image",
+    resultTitlePrefix: "以图生图",
+    onResultImage: setLatestImage,
+  });
+
+  useEffect(() => {
+    if (!open || initialReferenceImages.length === 0) return;
+    let disposed = false;
+    void Promise.all(initialReferenceImages.map((image, index) => imageUrlToFile(image, `image-to-image-reference-${index + 1}`)))
+      .then((files) => {
+        if (!disposed) {
+          setReferenceFiles(files);
+        }
+      })
+      .catch(() => {
+        toast.error("生成记录图片带入失败，请重新选择图片。");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [initialReferenceImages, initialSeed, open]);
+
+  const submit = async (mode: RunMode) => {
+    const referenceImages = await filesToDataUrls(referenceFiles);
+    if (referenceImages.length === 0 && !prompt.trim()) {
+      toast.error("请上传参考图，或填写生成要求。");
+      return;
+    }
+    await runner.run(mode, { prompt, referenceImages });
+  };
+
+  return (
+    <DrawerDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="以图生图"
+      width={1100}
+      closeOnOverlayClick={false}
+      footer={
+        <DrawerFooter
+          syncLabel="立即生成"
+          backgroundLabel="后台生成"
+          runningMode={runner.runningMode}
+          backgroundRunning={runner.backgroundRunning}
+          disabled={referenceFiles.length === 0 && !prompt.trim()}
+          onClose={() => onOpenChange(false)}
+          onRun={submit}
+        />
+      }
+    >
+      <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-muted/20 p-4">
+          <ImageUploadDropzone
+            id="toolbox-image-to-image-references"
+            files={referenceFiles}
+            onFilesChange={setReferenceFiles}
+            acceptPagePaste
+            multiple
+            title="上传参考图"
+            description="支持多张参考图。也可以不上传，只通过文字要求生成。"
+            emptyIcon="images"
+            minHeightClassName="min-h-[360px]"
+            previewColumnsClassName="grid-cols-2 md:grid-cols-3"
+          />
+          {latestImage ? (
+            <div className="rounded-2xl border border-border bg-card p-3">
+              <p className="mb-2 text-sm font-semibold">最新结果</p>
+              <img src={latestImage} alt="以图生图结果" className="max-h-[420px] w-full rounded-xl object-contain" />
+            </div>
+          ) : null}
+        </div>
+        <div className="min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-card p-4">
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">生成要求（非必填）</Label>
+            <Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：参考商品图，生成一个侧面角度的咖啡馆场景图，保持产品材质和颜色。" className="min-h-[180px]" />
+          </div>
+          <VersionPanel versions={runner.versions} onActivate={runner.activateVersion} />
+        </div>
+      </div>
+    </DrawerDialog>
+  );
+}
+
+export function ProductSceneDrawer({
+  open,
+  onOpenChange,
+  initialProductImage,
+  initialSeed,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initialProductImage?: InitialToolboxImage | null;
+  initialSeed?: number;
+}) {
+  const [productFiles, setProductFiles] = useState<File[]>([]);
+  const [sceneFiles, setSceneFiles] = useState<File[]>([]);
+  const [prompt, setPrompt] = useState("");
+  const [latestImage, setLatestImage] = useState("");
+  const runner = useToolboxRunner({
+    endpoint: "/api/ai-toolbox/product-scene",
+    resultTitlePrefix: "商品换场景",
+    onResultImage: setLatestImage,
+  });
+
+  useEffect(() => {
+    if (!open || !initialProductImage?.url) return;
+    let disposed = false;
+    void imageUrlToFile(initialProductImage, "product-scene-source")
+      .then((file) => {
+        if (!disposed) {
+          setProductFiles([file]);
+        }
+      })
+      .catch(() => {
+        toast.error("生成记录图片带入失败，请重新选择图片。");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [initialProductImage, initialSeed, open]);
+
+  const submit = async (mode: RunMode) => {
+    if (!productFiles[0]) {
+      toast.error("请先上传一张产品图。");
+      return;
+    }
+    const [productImage, sceneImages] = await Promise.all([
+      fileToDataUrl(productFiles[0]),
+      filesToDataUrls(sceneFiles),
+    ]);
+    await runner.run(mode, { productImage, sceneImages, prompt });
+  };
+
+  return (
+    <DrawerDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="商品换场景"
+      width={1100}
+      closeOnOverlayClick={false}
+      footer={
+        <DrawerFooter
+          syncLabel="立即换场景"
+          backgroundLabel="后台换场景"
+          runningMode={runner.runningMode}
+          backgroundRunning={runner.backgroundRunning}
+          disabled={productFiles.length === 0}
+          onClose={() => onOpenChange(false)}
+          onRun={submit}
+        />
+      }
+    >
+      <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-muted/20 p-4">
+          <ImageUploadDropzone
+            id="toolbox-product-scene-product"
+            files={productFiles}
+            onFilesChange={setProductFiles}
+            acceptPagePaste
+            title="上传产品图"
+            description="AI 会识别产品主体，并尽量保持产品形态、材质、颜色和细节。"
+            minHeightClassName="min-h-[260px]"
+          />
+          <ImageUploadDropzone
+            id="toolbox-product-scene-scenes"
+            files={sceneFiles}
+            onFilesChange={setSceneFiles}
+            acceptPagePaste
+            multiple
+            title="上传场景参考图（非必填）"
+            description="可以上传场景氛围、背景、灯光、构图参考图。"
+            emptyIcon="images"
+            minHeightClassName="min-h-[220px]"
+            previewColumnsClassName="grid-cols-2 md:grid-cols-3"
+          />
+          {latestImage ? (
+            <div className="rounded-2xl border border-border bg-card p-3">
+              <p className="mb-2 text-sm font-semibold">最新结果</p>
+              <img src={latestImage} alt="商品换场景结果" className="max-h-[420px] w-full rounded-xl object-contain" />
+            </div>
+          ) : null}
+        </div>
+        <div className="min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-card p-4">
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">场景描述（非必填）</Label>
+            <Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：把产品放在现代咖啡馆木质台面上，背景有柔和灯光和浅景深。" className="min-h-[180px]" />
+          </div>
+          <VersionPanel versions={runner.versions} onActivate={runner.activateVersion} />
+        </div>
+      </div>
+    </DrawerDialog>
+  );
+}

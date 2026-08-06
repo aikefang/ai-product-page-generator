@@ -86,7 +86,7 @@ function ImagePreviewModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex cursor-zoom-out items-center justify-center bg-black/82 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[220] flex cursor-zoom-out items-center justify-center bg-black/82 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label={`查看大图：${title}`}
@@ -94,13 +94,16 @@ function ImagePreviewModal({
     >
       <button
         type="button"
-        className="fixed right-5 top-5 z-[101] inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/14 text-white shadow-lg transition-colors hover:bg-white/24 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
-        onClick={onClose}
+        className="fixed right-5 top-5 z-[221] inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/14 text-white shadow-lg transition-colors hover:bg-white/24 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+        onClick={(event) => {
+          event.stopPropagation();
+          onClose();
+        }}
         aria-label="关闭大图预览"
       >
         <X className="h-5 w-5" />
       </button>
-      <div className="flex h-full w-full max-w-7xl flex-col gap-3">
+      <div className="flex h-full w-full max-w-7xl flex-col gap-3" onClick={(event) => event.stopPropagation()}>
         <div className="pointer-events-none flex shrink-0 items-center justify-between gap-3 pr-14 text-white">
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">{title}</p>
