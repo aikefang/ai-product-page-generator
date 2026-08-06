@@ -25,7 +25,13 @@ interface EditorWorkspaceProps {
 
 type TaskPayload = {
   id: string;
+  sectionId?: string | null;
+  taskType?: string;
   status: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELED";
+  inputPayload?: {
+    mode?: string;
+    editMode?: string;
+  } | null;
   outputPayload?: {
     totalItems?: number;
     completedItems?: number;
@@ -34,6 +40,10 @@ type TaskPayload = {
     targetLanguage?: ContentLanguage;
   } | null;
   errorMessage?: string | null;
+};
+type LocalRepaintTaskState = {
+  id: string;
+  sectionId: string;
 };
 type ImageAspectRatio = "3:4" | "9:16";
 type SectionAction = "generate" | "regenerate" | "repaint" | "enhance" | "inpaint";
@@ -333,6 +343,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const [referenceMaskOpen, setReferenceMaskOpen] = useState(false);
   const [autoInstructionGenerating, setAutoInstructionGenerating] = useState(false);
   const [referenceCropImages, setReferenceCropImages] = useState<string[]>([]);
+  const [localRepaintTask, setLocalRepaintTask] = useState<LocalRepaintTaskState | null>(null);
   const localRepaintPanelRef = useRef<LocalRepaintPanelHandle | null>(null);
   const referenceMaskPanelRef = useRef<ReferenceMaskSelectionPanelHandle | null>(null);
   const referenceUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -406,6 +417,78 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const hasRunningSectionAction = Object.keys(runningSectionActions).length > 0;
   const selectedSectionIsGenerating = selectedSection?.status === "GENERATING" || Boolean(selectedSectionAction);
   const hasGeneratingSection = hasRunningSectionAction || project.sections.some((section: any) => section.status === "GENERATING");
+
+  useEffect(() => {
+    const tasks = Array.isArray(project.tasks) ? (project.tasks as TaskPayload[]) : [];
+    const activeTask = tasks.find(
+      (task) =>
+        task.taskType === "REGENERATE" &&
+        (task.status === "PENDING" || task.status === "RUNNING") &&
+        typeof task.sectionId === "string" &&
+        task.inputPayload?.mode === "edit_image" &&
+        task.inputPayload?.editMode === "inpaint",
+    );
+
+    if (!activeTask?.sectionId) {
+      return;
+    }
+
+    setLocalRepaintTask((current) => (current?.id === activeTask.id ? current : { id: activeTask.id, sectionId: activeTask.sectionId! }));
+    setRunningSectionActions((current) =>
+      current[activeTask.sectionId!] === "inpaint" ? current : { ...current, [activeTask.sectionId!]: "inpaint" },
+    );
+  }, [project.tasks]);
+
+  useEffect(() => {
+    if (!localRepaintTask) {
+      return;
+    }
+
+    let disposed = false;
+
+    const pollLocalRepaintTask = async () => {
+      try {
+        const response = await fetch(`/api/tasks/${localRepaintTask.id}`, { cache: "no-store" });
+        const payload = await response.json();
+        const task = payload.success ? (payload.data as TaskPayload | null) : null;
+        if (disposed || !task) {
+          return;
+        }
+
+        if (task.status === "PENDING" || task.status === "RUNNING") {
+          return;
+        }
+
+        await refreshProject();
+        if (disposed) {
+          return;
+        }
+
+        finishSectionAction(localRepaintTask.sectionId);
+        setLocalRepaintTask(null);
+
+        if (task.status === "SUCCESS") {
+          setReferenceCropImages([]);
+          localRepaintPanelRef.current?.reset();
+          toast.success("局部重绘已完成，并自动保存新版本");
+        } else if (task.status === "CANCELED") {
+          toast.message("已终止局部重绘任务");
+        } else {
+          toast.error(task.errorMessage ?? "局部重绘失败，请重试");
+        }
+      } catch {
+        // 轮询中的短暂网络错误不打断后台任务。
+      }
+    };
+
+    void pollLocalRepaintTask();
+    const timer = window.setInterval(pollLocalRepaintTask, 2000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [localRepaintTask]);
 
   useEffect(() => {
     if (selectedHeroIndex >= galleryImages.length) {
@@ -602,6 +685,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     if (!selectedSection) return false;
     const sectionId = selectedSection.id;
     const previousStatus = selectedSection.status;
+    let taskStarted = false;
     if (editMode !== "translate") {
       startSectionAction(sectionId, editMode);
     }
@@ -630,6 +714,13 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         await refreshProject();
         return false;
       }
+      if (editMode === "inpaint" && payload.data?.id) {
+        taskStarted = true;
+        setLocalRepaintTask({ id: payload.data.id, sectionId });
+        await refreshProject();
+        toast.success("局部重绘任务已创建，系统会在后台继续处理");
+        return true;
+      }
       if (payload.data?.generationMode === "svg_fallback") {
         toast.warning("当前 Provider 没有可用真实图片编辑端点，本次结果为 SVG 兜底预览。");
       } else {
@@ -656,7 +747,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       }
       return false;
     } finally {
-      if (editMode !== "translate") {
+      if (editMode !== "translate" && !taskStarted) {
         finishSectionAction(sectionId);
       }
     }
@@ -675,14 +766,10 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       return;
     }
 
-    const success = await runImageEdit("inpaint", undefined, {
+    await runImageEdit("inpaint", undefined, {
       ...payload,
       referenceCropImages,
     });
-    if (success) {
-      setReferenceCropImages([]);
-      localRepaintPanelRef.current?.reset();
-    }
   };
 
   const requestLocalRepaintInstruction = async (

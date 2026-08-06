@@ -16,9 +16,13 @@ import {
   createTask,
   failTask,
   findRecentRunningTask,
+  getTask,
   registerTaskAbortController,
   releaseTaskAbortController,
+  runTaskInBackground,
+  startTask,
 } from "@/lib/services/task-service";
+import { runWithProviderCredentials, type RequestProviderCredentials } from "@/lib/services/provider-runtime";
 import { buildVisualPromptWithAgent } from "@/lib/services/visual-prompt-agent";
 import { readStorageFile, saveGeneratedImage } from "@/lib/storage/asset-manager";
 import { normalizeContentLanguage, type ContentLanguage } from "@/lib/utils/content-language";
@@ -73,6 +77,15 @@ type ProviderContext = Awaited<ReturnType<typeof getProviderAdapter>>["provider"
 type AdapterContext = Awaited<ReturnType<typeof getProviderAdapter>>["adapter"];
 type AssetRecord = Pick<ProductAsset, "id" | "filePath" | "fileName" | "mimeType" | "type" | "isMain">;
 type SectionImageAspectRatio = "1:1" | "3:4" | "9:16";
+type SectionImageEditOptions = {
+  preferredModelId?: string | null;
+  referenceAssetIds?: string[];
+  editMode?: "repaint" | "enhance" | "translate" | "inpaint";
+  targetLanguage?: ContentLanguage;
+  mask?: string;
+  editInstruction?: string;
+  referenceCropImages?: string[];
+};
 
 function isTaskCanceledError(error: unknown) {
   return error instanceof Error && /task canceled/i.test(error.message);
@@ -1068,18 +1081,27 @@ export async function generateLocalInpaintInstruction(
   };
 }
 
-export async function editSectionImage(
+async function findActiveSectionEditTask(projectId: string, sectionId: string) {
+  return prisma.generationTask.findFirst({
+    where: {
+      projectId,
+      sectionId,
+      taskType: "REGENERATE",
+      status: { in: ["PENDING", "RUNNING"] },
+      OR: [
+        { startedAt: { gte: new Date(Date.now() - 20 * 60 * 1000) } },
+        { createdAt: { gte: new Date(Date.now() - 20 * 60 * 1000) } },
+      ],
+    },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+async function createSectionImageEditTask(
   projectId: string,
   sectionId: string,
-  options?: {
-    preferredModelId?: string | null;
-    referenceAssetIds?: string[];
-    editMode?: "repaint" | "enhance" | "translate" | "inpaint";
-    targetLanguage?: ContentLanguage;
-    mask?: string;
-    editInstruction?: string;
-    referenceCropImages?: string[];
-  },
+  options?: SectionImageEditOptions,
+  status: "PENDING" | "RUNNING" = "RUNNING",
 ) {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -1108,12 +1130,8 @@ export async function editSectionImage(
     throw new Error("当前模块还没有可编辑的底图，请先生成一张模块图。");
   }
 
-  const { provider, adapter } = await getProviderAdapter();
+  const { provider } = await getProviderAdapter();
   const generationSettings = getGenerationSettings(project);
-  const visualStyleGuide = getProjectVisualStyleGuide(project);
-  const generationRequirements = readGenerationRequirements(project.analysis?.normalizedResult);
-  const sectionAspectRatio = getSectionAspectRatio(section, generationSettings.imageAspectRatio);
-  const outputSize = getOutputSize(sectionAspectRatio);
   const modelCandidates = buildImageModelCandidates(provider, {
     preferredModelId: options?.preferredModelId,
     edit: true,
@@ -1128,36 +1146,25 @@ export async function editSectionImage(
   if (editMode === "inpaint" && !options?.editInstruction?.trim()) {
     throw new Error("局部重绘需要填写修改说明。");
   }
+
+  const runningTask = await findActiveSectionEditTask(projectId, sectionId);
+  if (runningTask) {
+    throw new Error("当前模块图仍在重绘、增强或局部重绘中，请等待这一轮完成后再试。");
+  }
+
   const productReferenceAssets = mergeReferenceAssets(project.assets as AssetRecord[], explicitReferenceAssets as AssetRecord[]);
   const effectiveReferenceAssets =
     editMode === "inpaint"
       ? (explicitReferenceAssets as AssetRecord[])
       : productReferenceAssets;
-  const baseImage = await assetToDataUrl(section.currentImageAsset as AssetRecord);
-  const fullReferenceImages = await Promise.all(
-    effectiveReferenceAssets
-      .filter((asset) => asset.id !== section.currentImageAssetId)
-      .map((asset) => assetToDataUrl(asset)),
-  );
   const referenceCropImages = editMode === "inpaint" ? options?.referenceCropImages ?? [] : [];
-  const referenceImages = editMode === "inpaint"
-    ? [...fullReferenceImages, ...referenceCropImages]
-    : fullReferenceImages;
   const effectiveContentLanguage = editMode === "translate" ? normalizeContentLanguage(options?.targetLanguage) : generationSettings.contentLanguage;
-  const runningTask = await findRecentRunningTask({
-    projectId,
-    sectionId,
-    taskType: "REGENERATE",
-    maxAgeMinutes: 20,
-  });
-  if (runningTask) {
-    throw new Error("当前模块图仍在重绘、增强或局部重绘中，请等待这一轮完成后再试。");
-  }
 
   const task = await createTask({
     projectId,
     sectionId,
     taskType: "REGENERATE",
+    status,
     inputPayload: {
       mode: "edit_image",
       editMode,
@@ -1172,6 +1179,12 @@ export async function editSectionImage(
       referenceCropImageCount: referenceCropImages.length,
       allowSvgFallback: editMode === "inpaint" ? false : generationSettings.allowSvgFallback,
     },
+    outputPayload: {
+      mode: "edit_image",
+      editMode,
+      currentStep: status === "PENDING" ? "queued" : "running",
+      referenceCropImageCount: referenceCropImages.length,
+    },
   });
 
   await prisma.pageSection.update({
@@ -1179,7 +1192,105 @@ export async function editSectionImage(
     data: { status: "GENERATING" },
   });
 
+  return task;
+}
+
+export async function startSectionImageEditTask(
+  projectId: string,
+  sectionId: string,
+  options: SectionImageEditOptions | undefined,
+  credentials: RequestProviderCredentials,
+) {
+  const task = await createSectionImageEditTask(projectId, sectionId, options, "PENDING");
+  runTaskInBackground(async () => {
+    try {
+      await runWithProviderCredentials(credentials, () => runSectionImageEditTask(task.id, projectId, sectionId, options));
+    } catch {
+      // runSectionImageEditTask already persists failure/cancel state.
+    }
+  });
+  return getTask(task.id);
+}
+
+export async function editSectionImage(
+  projectId: string,
+  sectionId: string,
+  options?: SectionImageEditOptions,
+) {
+  const task = await createSectionImageEditTask(projectId, sectionId, options, "RUNNING");
+  return runSectionImageEditTask(task.id, projectId, sectionId, options);
+}
+
+async function runSectionImageEditTask(
+  taskId: string,
+  projectId: string,
+  sectionId: string,
+  options?: SectionImageEditOptions,
+) {
+  const taskSignal = registerTaskAbortController(taskId);
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    include: {
+      assets: { orderBy: [{ isMain: "desc" }, { sortOrder: "asc" }, { createdAt: "asc" }] },
+      analysis: true,
+    },
+  });
+
+  const section = await prisma.pageSection.findUnique({
+    where: { id: sectionId },
+    include: {
+      currentImageAsset: true,
+    },
+  });
+
   try {
+    await startTask(taskId, { currentStep: "running" });
+    await assertTaskNotCanceled(taskId);
+
+    if (!project) {
+      throw new Error("Project not found.");
+    }
+
+    if (!section || section.projectId !== projectId) {
+      throw new Error("Section not found.");
+    }
+
+    if (!section.currentImageAsset) {
+      throw new Error("当前模块还没有可编辑的底图，请先生成一张模块图。");
+    }
+
+    const { provider, adapter } = await getProviderAdapter();
+    const generationSettings = getGenerationSettings(project);
+    const visualStyleGuide = getProjectVisualStyleGuide(project);
+    const generationRequirements = readGenerationRequirements(project.analysis?.normalizedResult);
+    const sectionAspectRatio = getSectionAspectRatio(section, generationSettings.imageAspectRatio);
+    const outputSize = getOutputSize(sectionAspectRatio);
+    const modelCandidates = buildImageModelCandidates(provider, {
+      preferredModelId: options?.preferredModelId,
+      edit: true,
+      regenerate: true,
+    });
+    const selectedModel = modelCandidates[0] ?? null;
+    const explicitReferenceAssets = await resolveReferenceAssets(options?.referenceAssetIds ?? []);
+    const editMode = options?.editMode ?? "repaint";
+    const productReferenceAssets = mergeReferenceAssets(project.assets as AssetRecord[], explicitReferenceAssets as AssetRecord[]);
+    const effectiveReferenceAssets =
+      editMode === "inpaint"
+        ? (explicitReferenceAssets as AssetRecord[])
+        : productReferenceAssets;
+    const baseImage = await assetToDataUrl(section.currentImageAsset as AssetRecord);
+    const fullReferenceImages = await Promise.all(
+      effectiveReferenceAssets
+        .filter((asset) => asset.id !== section.currentImageAssetId)
+        .map((asset) => assetToDataUrl(asset)),
+    );
+    const referenceCropImages = editMode === "inpaint" ? options?.referenceCropImages ?? [] : [];
+    const referenceImages = editMode === "inpaint"
+      ? [...fullReferenceImages, ...referenceCropImages]
+      : fullReferenceImages;
+    const effectiveContentLanguage = editMode === "translate" ? normalizeContentLanguage(options?.targetLanguage) : generationSettings.contentLanguage;
+
     const basePrompt =
       editMode === "inpaint"
         ? buildLocalInpaintPrompt(
@@ -1217,7 +1328,9 @@ export async function editSectionImage(
             projectId,
             sectionId,
             operation: editMode === "translate" ? "visual_prompt_agent_translate_section" : editMode === "enhance" ? "visual_prompt_agent_enhance_section" : "visual_prompt_agent_repaint_section",
+            signal: taskSignal,
           });
+    await assertTaskNotCanceled(taskId);
 
     let imageAsset;
     let version;
@@ -1241,7 +1354,9 @@ export async function editSectionImage(
         projectId,
         sectionId,
         operation: editMode === "translate" ? "translate_section_image" : editMode === "enhance" ? "enhance_section_image" : editMode === "inpaint" ? "inpaint_section_image" : "repaint_section_image",
+        signal: taskSignal,
       });
+      await assertTaskNotCanceled(taskId);
 
       imageAsset = await saveGeneratedImage({
         projectId,
@@ -1261,6 +1376,7 @@ export async function editSectionImage(
           primaryReferenceAssetId: effectiveReferenceAssets[0]?.id ?? null,
         },
       });
+      await assertTaskNotCanceled(taskId);
 
       usedModel = generation.model;
       generationMode = "image_api";
@@ -1300,7 +1416,9 @@ export async function editSectionImage(
         referenceAssets: effectiveReferenceAssets,
         aspectRatio: sectionAspectRatio,
         contentLanguage: generationSettings.contentLanguage,
+        signal: taskSignal,
       });
+      await assertTaskNotCanceled(taskId);
 
       imageAsset = await saveGeneratedImage({
         projectId,
@@ -1323,6 +1441,7 @@ export async function editSectionImage(
           imageApiError: error instanceof Error ? error.message : "Unknown image edit api error",
         },
       });
+      await assertTaskNotCanceled(taskId);
 
       usedModel = fallback.model;
       generationMode = "svg_fallback";
@@ -1334,6 +1453,7 @@ export async function editSectionImage(
       promptSnapshot: prompt,
       copySnapshot: section.copy,
     });
+    await assertTaskNotCanceled(taskId);
 
     await prisma.pageSection.update({
       where: { id: sectionId },
@@ -1350,7 +1470,7 @@ export async function editSectionImage(
       },
     });
 
-    await completeTask(task.id, {
+    await completeTask(taskId, {
       mode: "edit_image",
       editMode,
       targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
@@ -1373,8 +1493,17 @@ export async function editSectionImage(
       },
     });
 
-    await failTask(task.id, error instanceof Error ? error.message : "Image edit failed");
+    if (isTaskCanceledError(error)) {
+      await prisma.pageSection.update({
+        where: { id: sectionId },
+        data: { status: section?.currentImageAssetId ? "SUCCESS" : "IDLE" },
+      });
+    } else {
+      await failTask(taskId, error instanceof Error ? error.message : "Image edit failed");
+    }
     throw error;
+  } finally {
+    releaseTaskAbortController(taskId);
   }
 }
 
