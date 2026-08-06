@@ -20,6 +20,11 @@ type Point = {
   y: number;
 };
 
+const REFERENCE_CROP_MAX_LONG_SIDE = 1280;
+const REFERENCE_CROP_MAX_DATA_URL_LENGTH = 2 * 1024 * 1024;
+const REFERENCE_CROP_FALLBACK_LONG_SIDES = [1280, 1024, 768];
+const REFERENCE_CROP_JPEG_QUALITIES = [0.86, 0.78, 0.68];
+
 interface ImageMaskCanvasProps {
   imageUrl: string;
   title?: ReactNode;
@@ -282,26 +287,47 @@ export const ImageMaskCanvas = forwardRef<ImageMaskCanvasHandle, ImageMaskCanvas
         const cropMaxY = Math.min(image.naturalHeight, Math.ceil(bounds.maxY + padding));
         const cropWidth = Math.max(1, cropMaxX - cropX);
         const cropHeight = Math.max(1, cropMaxY - cropY);
+        let fallbackDataUrl: string | null = null;
 
-        const crop = document.createElement("canvas");
-        crop.width = cropWidth;
-        crop.height = cropHeight;
-        const context = crop.getContext("2d");
-        if (!context) return null;
+        for (const targetLongSide of REFERENCE_CROP_FALLBACK_LONG_SIDES) {
+          const boundedLongSide = Math.min(REFERENCE_CROP_MAX_LONG_SIDE, targetLongSide);
+          const scale = Math.min(1, boundedLongSide / Math.max(cropWidth, cropHeight));
+          const outputWidth = Math.max(1, Math.round(cropWidth * scale));
+          const outputHeight = Math.max(1, Math.round(cropHeight * scale));
+          const crop = document.createElement("canvas");
+          crop.width = outputWidth;
+          crop.height = outputHeight;
+          const context = crop.getContext("2d");
+          if (!context) return fallbackDataUrl;
 
-        context.drawImage(
-          image,
-          cropX,
-          cropY,
-          cropWidth,
-          cropHeight,
-          0,
-          0,
-          cropWidth,
-          cropHeight,
-        );
+          context.save();
+          context.fillStyle = "#ffffff";
+          context.fillRect(0, 0, outputWidth, outputHeight);
+          context.imageSmoothingEnabled = true;
+          context.imageSmoothingQuality = "high";
+          context.drawImage(
+            image,
+            cropX,
+            cropY,
+            cropWidth,
+            cropHeight,
+            0,
+            0,
+            outputWidth,
+            outputHeight,
+          );
+          context.restore();
 
-        return crop.toDataURL("image/png");
+          for (const quality of REFERENCE_CROP_JPEG_QUALITIES) {
+            const dataUrl = crop.toDataURL("image/jpeg", quality);
+            fallbackDataUrl = dataUrl;
+            if (dataUrl.length <= REFERENCE_CROP_MAX_DATA_URL_LENGTH) {
+              return dataUrl;
+            }
+          }
+        }
+
+        return fallbackDataUrl;
       } catch {
         return null;
       }
