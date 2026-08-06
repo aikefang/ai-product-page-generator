@@ -1,6 +1,6 @@
 import fs from "fs/promises";
 import path from "path";
-import { Prisma } from "@prisma/client";
+import { Prisma, TaskType } from "@prisma/client";
 
 import type { XiaohongshuPlan } from "@/lib/ai/schemas/xiaohongshu";
 import { prisma } from "@/lib/db/prisma";
@@ -69,6 +69,20 @@ type BatchItemStatus = {
 };
 
 const systemProjectPlatform = "__turing_system_task__";
+
+function resolveTaskType(preferred: string, fallback: string) {
+  const inlineSchema = (prisma as typeof prisma & { _engineConfig?: { inlineSchema?: string } })._engineConfig?.inlineSchema;
+  return (typeof inlineSchema === "string" && inlineSchema.includes(preferred) ? preferred : fallback) as TaskType;
+}
+
+function sectionImageTaskTypes() {
+  const values: TaskType[] = [TaskType.GENERATE, TaskType.REGENERATE];
+  const editImageTaskType = resolveTaskType("EDIT_IMAGE", "REGENERATE");
+  if (!values.includes(editImageTaskType)) {
+    values.push(editImageTaskType);
+  }
+  return values;
+}
 
 function storageRoot() {
   return path.resolve(process.cwd(), env.STORAGE_ROOT);
@@ -575,7 +589,7 @@ export async function createGenerateAllSectionsTask(
     where: {
       projectId: input.projectId,
       sectionId: { not: null },
-      taskType: { in: ["GENERATE", "REGENERATE"] },
+      taskType: { in: sectionImageTaskTypes() },
       status: "RUNNING",
       startedAt: { gte: new Date(Date.now() - 20 * 60 * 1000) },
     },

@@ -1,6 +1,22 @@
+import { TaskType } from "@prisma/client";
+
 import { prisma } from "@/lib/db/prisma";
 import { cancelTask, updateTaskProgress } from "@/lib/services/task-service";
 import { fail, handleRouteError, ok } from "@/lib/utils/route";
+
+function resolveTaskType(preferred: string, fallback: string) {
+  const inlineSchema = (prisma as typeof prisma & { _engineConfig?: { inlineSchema?: string } })._engineConfig?.inlineSchema;
+  return (typeof inlineSchema === "string" && inlineSchema.includes(preferred) ? preferred : fallback) as TaskType;
+}
+
+function sectionImageTaskTypes() {
+  const values: TaskType[] = [TaskType.GENERATE, TaskType.REGENERATE];
+  const editImageTaskType = resolveTaskType("EDIT_IMAGE", "REGENERATE");
+  if (!values.includes(editImageTaskType)) {
+    values.push(editImageTaskType);
+  }
+  return values;
+}
 
 export async function POST(_request: Request, context: { params: { id: string; sectionId: string } }) {
   try {
@@ -15,7 +31,7 @@ export async function POST(_request: Request, context: { params: { id: string; s
       where: {
         projectId: context.params.id,
         sectionId: context.params.sectionId,
-        taskType: { in: ["GENERATE", "REGENERATE"] },
+        taskType: { in: sectionImageTaskTypes() },
         status: { in: ["PENDING", "RUNNING"] },
       },
       orderBy: { createdAt: "desc" },

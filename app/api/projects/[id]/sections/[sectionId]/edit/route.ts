@@ -12,16 +12,22 @@ export async function POST(
   return withProviderCredentials(request, async () => {
     try {
       const input = generationRequestSchema.parse(await request.json().catch(() => ({})));
-      if (input.editMode === "inpaint") {
-        const task = await startSectionImageEditTask(context.params.id, context.params.sectionId, {
-          preferredModelId: input.modelId,
-          referenceAssetIds: input.referenceAssetIds,
-          editMode: input.editMode,
-          targetLanguage: input.targetLanguage,
-          mask: input.mask,
-          editInstruction: input.editInstruction,
-          referenceCropImages: input.referenceCropImages,
-        }, readProviderCredentialsFromRequest(request));
+      if (input.editMode === "inpaint" && input.executionMode === "background") {
+        const task = await startSectionImageEditTask(
+          context.params.id,
+          context.params.sectionId,
+          {
+            preferredModelId: input.modelId,
+            referenceAssetIds: input.referenceAssetIds,
+            editMode: input.editMode,
+            executionMode: input.executionMode,
+            targetLanguage: input.targetLanguage,
+            mask: input.mask,
+            editInstruction: input.editInstruction,
+            referenceCropImages: input.referenceCropImages,
+          },
+          readProviderCredentialsFromRequest(request),
+        );
         return ok(task, { status: 202 });
       }
 
@@ -29,6 +35,7 @@ export async function POST(
         preferredModelId: input.modelId,
         referenceAssetIds: input.referenceAssetIds,
         editMode: input.editMode,
+        executionMode: input.executionMode,
         targetLanguage: input.targetLanguage,
         mask: input.mask,
         editInstruction: input.editInstruction,

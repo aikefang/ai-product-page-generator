@@ -12,6 +12,7 @@ export const generationRequestSchema = z.object({
   modelId: z.string().optional().nullable(),
   referenceAssetIds: z.array(z.string()).optional().default([]),
   editMode: z.enum(["repaint", "enhance", "translate", "inpaint"]).optional().default("repaint"),
+  executionMode: z.enum(["sync", "background"]).optional().default("sync"),
   targetLanguage: z.enum(contentLanguageOptions).optional(),
   mask: z.string().startsWith("data:image/").optional(),
   editInstruction: z.string().trim().max(1200).optional(),

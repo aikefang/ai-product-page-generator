@@ -116,6 +116,104 @@ export async function saveGeneratedImage(params: {
   });
 }
 
+export async function saveToolboxGeneratedImage(params: {
+  source: {
+    url?: string | null;
+    b64Json?: string | null;
+    mimeType?: string | null;
+  };
+  prefix?: string;
+}) {
+  await ensureStorageScaffold();
+  const dir = path.join(rootDir(), "generated", "toolbox");
+  await ensureDir(dir);
+
+  const mimeType = params.source.mimeType ?? "image/png";
+  const ext = extFromMime(mimeType);
+  const fileName = `${Date.now()}-${nanoid(6)}-${sanitizeFileName(params.prefix ?? "toolbox")}.${ext}`;
+  const relativePath = path.join("generated", "toolbox", fileName);
+  const absolutePath = path.join(rootDir(), relativePath);
+
+  if (params.source.b64Json) {
+    await fs.writeFile(absolutePath, Buffer.from(params.source.b64Json, "base64"));
+  } else if (params.source.url) {
+    const response = await fetch(params.source.url);
+    if (!response.ok) {
+      throw new Error(`Failed to download toolbox image: ${response.status}`);
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    await fs.writeFile(absolutePath, bytes);
+  } else {
+    throw new Error("图像模型没有返回可用图片。");
+  }
+
+  return {
+    filePath: relativePath,
+    url: relativeStorageUrl(relativePath),
+    mimeType,
+    fileName,
+  };
+}
+
+export async function saveToolboxInputImage(params: {
+  image: string;
+  prefix: string;
+}) {
+  await ensureStorageScaffold();
+  const dir = path.join(rootDir(), "toolbox-inputs");
+  await ensureDir(dir);
+
+  if (params.image.startsWith("/api/files/")) {
+    const filePath = params.image.replace(/^\/api\/files\//, "");
+    return {
+      filePath,
+      url: relativeStorageUrl(filePath),
+    };
+  }
+
+  const match = params.image.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) {
+    return {
+      filePath: null,
+      url: params.image,
+    };
+  }
+
+  const mimeType = match[1]!;
+  const ext = extFromMime(mimeType);
+  const fileName = `${Date.now()}-${nanoid(6)}-${sanitizeFileName(params.prefix)}.${ext}`;
+  const relativePath = path.join("toolbox-inputs", fileName);
+  await fs.writeFile(path.join(rootDir(), relativePath), Buffer.from(match[2]!, "base64"));
+
+  return {
+    filePath: relativePath,
+    url: relativeStorageUrl(relativePath),
+  };
+}
+
+export async function imageUrlToDataUrl(image: string) {
+  if (image.startsWith("data:image/")) {
+    return image;
+  }
+
+  if (image.startsWith("/api/files/")) {
+    const filePath = image.replace(/^\/api\/files\//, "");
+    const buffer = await readStorageFile(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeType =
+      ext === ".jpg" || ext === ".jpeg"
+        ? "image/jpeg"
+        : ext === ".webp"
+          ? "image/webp"
+          : ext === ".gif"
+            ? "image/gif"
+            : "image/png";
+    return `data:${mimeType};base64,${buffer.toString("base64")}`;
+  }
+
+  return image;
+}
+
 export async function duplicateExportFile(params: {
   projectId: string;
   fileName: string;

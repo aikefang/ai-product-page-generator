@@ -4,14 +4,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ImagePlus, Languages, Loader2, MessageCircle, RotateCcw, Save, ShoppingCart, Sparkles, Square, Star, ZoomIn } from "lucide-react";
 
-import { LocalRepaintPanel, type LocalRepaintPanelHandle, type LocalRepaintPayload } from "@/components/editor/local-repaint-panel";
-import { ReferenceMaskSelectionPanel, type ReferenceMaskSelectionPanelHandle } from "@/components/editor/reference-mask-selection-panel";
+import {
+  LocalRepaintDrawer,
+  type LocalRepaintRunMode,
+} from "@/components/editor/local-repaint-drawer";
+import type { LocalRepaintMaskPayload, LocalRepaintPayload } from "@/components/editor/local-repaint-panel";
+import type { ReferenceMaskPayload } from "@/components/editor/reference-mask-selection-panel";
 import { useImagePreview } from "@/components/shared/image-preview-provider";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { DrawerDialog } from "@/components/ui/drawer-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -340,12 +343,8 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
   const [selectedHeroIndex, setSelectedHeroIndex] = useState(0);
   const [translationTargetLanguage, setTranslationTargetLanguage] = useState<ContentLanguage>("en-US");
   const [localRepaintOpen, setLocalRepaintOpen] = useState(false);
-  const [referenceMaskOpen, setReferenceMaskOpen] = useState(false);
-  const [autoInstructionGenerating, setAutoInstructionGenerating] = useState(false);
-  const [referenceCropImages, setReferenceCropImages] = useState<string[]>([]);
   const [localRepaintTask, setLocalRepaintTask] = useState<LocalRepaintTaskState | null>(null);
-  const localRepaintPanelRef = useRef<LocalRepaintPanelHandle | null>(null);
-  const referenceMaskPanelRef = useRef<ReferenceMaskSelectionPanelHandle | null>(null);
+  const [localRepaintRunningMode, setLocalRepaintRunningMode] = useState<LocalRepaintRunMode | null>(null);
   const referenceUploadInputRef = useRef<HTMLInputElement | null>(null);
   const previewScrollRef = useRef<HTMLDivElement | null>(null);
   const previewSectionRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -389,9 +388,6 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         })),
     [checkedReferences, referenceAssets],
   );
-  useEffect(() => {
-    setReferenceCropImages([]);
-  }, [checkedReferences, selectedSectionId]);
   const galleryImages = useMemo(() => buildGalleryImages(project, previewConfig.heroImageCount), [project, previewConfig.heroImageCount]);
   const activeHeroImage = galleryImages[selectedHeroIndex] ?? galleryImages[0] ?? null;
   const selectedSectionIsHero = String(selectedSection?.type).toUpperCase() === "HERO";
@@ -422,7 +418,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     const tasks = Array.isArray(project.tasks) ? (project.tasks as TaskPayload[]) : [];
     const activeTask = tasks.find(
       (task) =>
-        task.taskType === "REGENERATE" &&
+        (task.taskType === "REGENERATE" || task.taskType === "EDIT_IMAGE") &&
         (task.status === "PENDING" || task.status === "RUNNING") &&
         typeof task.sectionId === "string" &&
         task.inputPayload?.mode === "edit_image" &&
@@ -466,10 +462,9 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
 
         finishSectionAction(localRepaintTask.sectionId);
         setLocalRepaintTask(null);
+        setLocalRepaintRunningMode(null);
 
         if (task.status === "SUCCESS") {
-          setReferenceCropImages([]);
-          localRepaintPanelRef.current?.reset();
           toast.success("局部重绘已完成，并自动保存新版本");
         } else if (task.status === "CANCELED") {
           toast.message("已终止局部重绘任务");
@@ -681,6 +676,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     editMode: ImageEditMode,
     targetLanguage?: ContentLanguage,
     localRepaintPayload?: LocalRepaintPayload,
+    executionMode: LocalRepaintRunMode = "sync",
   ) => {
     if (!selectedSection) return false;
     const sectionId = selectedSection.id;
@@ -688,6 +684,9 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
     let taskStarted = false;
     if (editMode !== "translate") {
       startSectionAction(sectionId, editMode);
+    }
+    if (editMode === "inpaint") {
+      setLocalRepaintRunningMode(executionMode);
     }
 
     try {
@@ -697,6 +696,7 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         body: JSON.stringify({
           referenceAssetIds: checkedReferences,
           editMode,
+          executionMode: editMode === "inpaint" ? executionMode : undefined,
           targetLanguage,
           mask: localRepaintPayload?.mask,
           editInstruction: localRepaintPayload?.editInstruction,
@@ -714,11 +714,11 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         await refreshProject();
         return false;
       }
-      if (editMode === "inpaint" && payload.data?.id) {
+      if (editMode === "inpaint" && executionMode === "background" && payload.data?.id) {
         taskStarted = true;
         setLocalRepaintTask({ id: payload.data.id, sectionId });
         await refreshProject();
-        toast.success("局部重绘任务已创建，系统会在后台继续处理");
+        toast.success("后台重绘任务已创建，系统会继续处理");
         return true;
       }
       if (payload.data?.generationMode === "svg_fallback") {
@@ -750,118 +750,44 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
       if (editMode !== "translate" && !taskStarted) {
         finishSectionAction(sectionId);
       }
+      if (editMode === "inpaint" && !taskStarted) {
+        setLocalRepaintRunningMode(null);
+      }
     }
   };
 
-  const runLocalRepaint = async () => {
-    const validationMessage = localRepaintPanelRef.current?.getValidationMessage();
-    if (validationMessage) {
-      toast.error(validationMessage);
-      return;
-    }
-
-    const payload = localRepaintPanelRef.current?.getPayload();
-    if (!payload) {
-      toast.error("局部重绘参数生成失败，请重新涂抹后再试。");
-      return;
-    }
-
-    await runImageEdit("inpaint", undefined, {
-      ...payload,
-      referenceCropImages,
-    });
+  const runLocalRepaint = async (mode: LocalRepaintRunMode, payload: LocalRepaintPayload) => {
+    return runImageEdit("inpaint", undefined, payload, mode);
   };
 
-  const requestLocalRepaintInstruction = async (
-    references: Array<{
-      assetId: string;
-      mask: string;
-      previewImage?: string | null;
-      cropImage?: string | null;
-    }> = [],
-    closeReferenceMaskDrawer = false,
+  const generateLocalRepaintInstruction = async (
+    baseMaskPayload: LocalRepaintMaskPayload,
+    references: ReferenceMaskPayload[] = [],
   ) => {
-    if (!selectedSection) return;
-
-    const baseMaskPayload = localRepaintPanelRef.current?.getMaskPayload();
-    if (!baseMaskPayload) {
-      toast.error("请先在当前图上涂抹需要局部重绘的区域。");
-      return;
+    if (!selectedSection) {
+      throw new Error("请先选择一个模块。");
     }
 
-    setAutoInstructionGenerating(true);
-    try {
-      const nextReferenceCropImages = references
+    const response = await fetch(`/api/projects/${project.id}/sections/${selectedSection.id}/inpaint-instruction`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baseMask: baseMaskPayload.mask,
+        basePreviewImage: baseMaskPayload.previewImage,
+        references,
+      }),
+    });
+    const payload = await response.json();
+    if (!payload.success || !payload.data?.instruction) {
+      throw new Error(payload.error?.message ?? "自动生成修改说明失败");
+    }
+
+    return {
+      instruction: payload.data.instruction as string,
+      referenceCropImages: references
         .map((reference) => reference.cropImage)
-        .filter((image): image is string => Boolean(image));
-      const response = await fetch(`/api/projects/${project.id}/sections/${selectedSection.id}/inpaint-instruction`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          baseMask: baseMaskPayload.mask,
-          basePreviewImage: baseMaskPayload.previewImage,
-          references,
-        }),
-      });
-      const payload = await response.json();
-      if (!payload.success || !payload.data?.instruction) {
-        throw new Error(payload.error?.message ?? "自动生成修改说明失败");
-      }
-
-      setReferenceCropImages(nextReferenceCropImages);
-      localRepaintPanelRef.current?.setInstruction(payload.data.instruction);
-      if (closeReferenceMaskDrawer) {
-        setReferenceMaskOpen(false);
-      }
-      toast.success(
-        references.length > 0
-          ? "已结合参考图生成局部修改说明，可以继续微调后开始重绘。"
-          : "已根据原图涂抹区域生成局部修改说明，可以继续微调后开始重绘。",
-      );
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "自动生成修改说明失败");
-    } finally {
-      setAutoInstructionGenerating(false);
-    }
-  };
-
-  const openAutoInstructionDrawer = () => {
-    const maskValidationMessage = localRepaintPanelRef.current?.getMaskValidationMessage();
-    if (maskValidationMessage) {
-      toast.error(maskValidationMessage);
-      return;
-    }
-
-    if (selectedReferenceAssets.length === 0) {
-      void requestLocalRepaintInstruction([]);
-      return;
-    }
-
-    setReferenceMaskOpen(true);
-  };
-
-  const generateLocalRepaintInstruction = async () => {
-    if (!selectedSection) return;
-
-    const baseMaskPayload = localRepaintPanelRef.current?.getMaskPayload();
-    if (!baseMaskPayload) {
-      toast.error("请先在当前图上涂抹需要局部重绘的区域。");
-      return;
-    }
-
-    const referenceValidationMessage = referenceMaskPanelRef.current?.getValidationMessage();
-    if (referenceValidationMessage) {
-      toast.error(referenceValidationMessage);
-      return;
-    }
-
-    const references = referenceMaskPanelRef.current?.getPayload() ?? [];
-    if (references.length === 0) {
-      toast.error("请至少在一张参考图上涂抹需要参考的区域。");
-      return;
-    }
-
-    await requestLocalRepaintInstruction(references, true);
+        .filter((image): image is string => Boolean(image)),
+    };
   };
 
   const translateGeneratedDetailPage = async () => {
@@ -1476,55 +1402,24 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
           )}
         </CardContent>
       </Card>
-      <DrawerDialog
+      <LocalRepaintDrawer
         open={localRepaintOpen}
         onOpenChange={setLocalRepaintOpen}
         title="局部重绘"
+        imageUrl={selectedSection?.imageUrl}
+        imageTitle={selectedSection?.title}
         width={1000}
         closeOnOverlayClick={false}
-        confirmContent="开始重绘"
-        cancelContent="关闭"
-        loading={selectedSectionAction === "inpaint"}
-        confirmDisabled={!hasGeneratedImage || selectedSectionIsGenerating || Boolean(runningPageAction)}
-        onCancel={() => setLocalRepaintOpen(false)}
-        onConfirm={runLocalRepaint}
-      >
-        {selectedSection?.imageUrl ? (
-          <LocalRepaintPanel
-            ref={localRepaintPanelRef}
-            imageUrl={selectedSection.imageUrl}
-            title={selectedSection.title}
-            references={selectedReferenceAssets}
-            referencePanel={renderReferenceSelector({ embedded: true })}
-            versionPanel={renderVersionHistory({ embedded: true })}
-            autoInstructionLoading={autoInstructionGenerating}
-            onAutoGenerateInstruction={openAutoInstructionDrawer}
-          />
-        ) : (
-          <div className="rounded-2xl border border-dashed border-border bg-muted/30 p-6 text-sm leading-6 text-muted-foreground">
-            当前模块还没有可局部重绘的图片，请先生成当前模块图。
-          </div>
-        )}
-      </DrawerDialog>
-      <DrawerDialog
-        open={referenceMaskOpen}
-        onOpenChange={setReferenceMaskOpen}
-        title="参考图选位置"
-        description="根据已带入的参考图，涂抹每张参考图中希望 AI 借鉴的局部细节。"
-        width={1000}
-        closeOnOverlayClick={false}
-        confirmContent="生成说明"
-        loading={autoInstructionGenerating}
-        confirmDisabled={selectedReferenceAssets.length === 0 || autoInstructionGenerating}
-        cancelDisabled={autoInstructionGenerating}
-        onCancel={() => setReferenceMaskOpen(false)}
-        onConfirm={generateLocalRepaintInstruction}
-      >
-        <ReferenceMaskSelectionPanel
-          ref={referenceMaskPanelRef}
-          references={selectedReferenceAssets}
-        />
-      </DrawerDialog>
+        references={selectedReferenceAssets}
+        referencePanel={renderReferenceSelector({ embedded: true })}
+        versionPanel={renderVersionHistory({ embedded: true })}
+        canRun={hasGeneratedImage && !selectedSectionIsGenerating && !runningPageAction}
+        runDisabledReason="当前模块还没有可局部重绘的图片，或当前模块正在处理中。"
+        immediateRunning={selectedSectionAction === "inpaint" && localRepaintRunningMode === "sync"}
+        backgroundRunning={Boolean(localRepaintTask) || (selectedSectionAction === "inpaint" && localRepaintRunningMode === "background")}
+        onRun={runLocalRepaint}
+        onGenerateInstruction={generateLocalRepaintInstruction}
+      />
     </div>
   );
 }

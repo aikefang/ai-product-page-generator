@@ -51,10 +51,21 @@ enum TaskType {
   PLAN
   GENERATE
   REGENERATE
+  EDIT_IMAGE
   EXPORT
   BATCH_CREATE
   TRANSLATE_PAGE
   XHS_GENERATE
+  TOOLBOX_LOCAL_REPAINT
+  TOOLBOX_OUTPAINT
+  TOOLBOX_IMAGE_TO_IMAGE
+  TOOLBOX_TEXT_TO_IMAGE
+  TOOLBOX_ENHANCE
+  TOOLBOX_BACKGROUND_REPLACE
+  TOOLBOX_PRODUCT_SCENE
+  TOOLBOX_UPSCALE
+  TOOLBOX_REMOVE_BACKGROUND
+  TOOLBOX_IMAGE_TRANSLATE
   QA_CHECK
 }
 
@@ -64,6 +75,19 @@ enum TaskStatus {
   SUCCESS
   FAILED
   CANCELED
+}
+
+enum ToolboxToolType {
+  LOCAL_REPAINT
+  OUTPAINT
+  IMAGE_TO_IMAGE
+  TEXT_TO_IMAGE
+  ENHANCE
+  BACKGROUND_REPLACE
+  PRODUCT_SCENE
+  UPSCALE
+  REMOVE_BACKGROUND
+  IMAGE_TRANSLATE
 }
 
 model Project {
@@ -204,7 +228,28 @@ model GenerationTask {
   completedAt  DateTime?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
+  toolboxRecords ToolboxGenerationRecord[]
 
   @@index([projectId, createdAt])
   @@index([sectionId, createdAt])
+}
+
+model ToolboxGenerationRecord {
+  id              String          @id @default(cuid())
+  toolType        ToolboxToolType
+  taskId          String?
+  task            GenerationTask? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  status          TaskStatus      @default(SUCCESS)
+  inputImagePath  String?
+  maskImagePath   String?
+  outputImagePath String?
+  prompt          String?
+  model           String?
+  references      Json?
+  metadata        Json?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([toolType, createdAt])
+  @@index([taskId])
 }

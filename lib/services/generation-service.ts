@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PageSection, ProductAsset } from "@prisma/client";
+import { TaskType, type PageSection, type ProductAsset } from "@prisma/client";
 
 import {
   buildImageEditPrompt,
@@ -43,6 +43,20 @@ const inpaintInstructionSchema = z.object({
   instruction: z.string().min(2).max(1200),
 });
 
+function resolveTaskType(preferred: string, fallback: string) {
+  const inlineSchema = (prisma as typeof prisma & { _engineConfig?: { inlineSchema?: string } })._engineConfig?.inlineSchema;
+  return (typeof inlineSchema === "string" && inlineSchema.includes(preferred) ? preferred : fallback) as TaskType;
+}
+
+function sectionEditTaskTypes() {
+  const values: TaskType[] = [TaskType.REGENERATE];
+  const editImageTaskType = resolveTaskType("EDIT_IMAGE", "REGENERATE");
+  if (!values.includes(editImageTaskType)) {
+    values.push(editImageTaskType);
+  }
+  return values;
+}
+
 const svgCopyByLanguage: Partial<Record<
   ContentLanguage,
   {
@@ -81,6 +95,7 @@ type SectionImageEditOptions = {
   preferredModelId?: string | null;
   referenceAssetIds?: string[];
   editMode?: "repaint" | "enhance" | "translate" | "inpaint";
+  executionMode?: "sync" | "background";
   targetLanguage?: ContentLanguage;
   mask?: string;
   editInstruction?: string;
@@ -1086,7 +1101,7 @@ async function findActiveSectionEditTask(projectId: string, sectionId: string) {
     where: {
       projectId,
       sectionId,
-      taskType: "REGENERATE",
+      taskType: { in: sectionEditTaskTypes() },
       status: { in: ["PENDING", "RUNNING"] },
       OR: [
         { startedAt: { gte: new Date(Date.now() - 20 * 60 * 1000) } },
@@ -1163,11 +1178,12 @@ async function createSectionImageEditTask(
   const task = await createTask({
     projectId,
     sectionId,
-    taskType: "REGENERATE",
+    taskType: resolveTaskType("EDIT_IMAGE", "REGENERATE"),
     status,
     inputPayload: {
       mode: "edit_image",
       editMode,
+      executionMode: options?.executionMode ?? "sync",
       targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
       model: selectedModel,
       modelCandidates,
@@ -1182,6 +1198,7 @@ async function createSectionImageEditTask(
     outputPayload: {
       mode: "edit_image",
       editMode,
+      executionMode: options?.executionMode ?? "sync",
       currentStep: status === "PENDING" ? "queued" : "running",
       referenceCropImageCount: referenceCropImages.length,
     },
@@ -1217,17 +1234,40 @@ export async function editSectionImage(
   sectionId: string,
   options?: SectionImageEditOptions,
 ) {
+  if ((options?.editMode ?? "repaint") === "inpaint" && (options?.executionMode ?? "sync") === "sync") {
+    if (!options?.mask) {
+      throw new Error("局部重绘需要先涂抹需要修改的区域。");
+    }
+    if (!options?.editInstruction?.trim()) {
+      throw new Error("局部重绘需要填写修改说明。");
+    }
+    const runningTask = await findActiveSectionEditTask(projectId, sectionId);
+    if (runningTask) {
+      throw new Error("当前模块图仍在后台重绘中，请等待这一轮完成后再试。");
+    }
+    await prisma.pageSection.update({
+      where: { id: sectionId },
+      data: { status: "GENERATING" },
+    });
+    return runSectionImageEditTask(null, projectId, sectionId, options);
+  }
+
   const task = await createSectionImageEditTask(projectId, sectionId, options, "RUNNING");
   return runSectionImageEditTask(task.id, projectId, sectionId, options);
 }
 
 async function runSectionImageEditTask(
-  taskId: string,
+  taskId: string | null,
   projectId: string,
   sectionId: string,
   options?: SectionImageEditOptions,
 ) {
-  const taskSignal = registerTaskAbortController(taskId);
+  const taskSignal = taskId ? registerTaskAbortController(taskId) : undefined;
+  const assertCurrentTaskNotCanceled = async () => {
+    if (taskId) {
+      await assertTaskNotCanceled(taskId);
+    }
+  };
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -1245,8 +1285,10 @@ async function runSectionImageEditTask(
   });
 
   try {
-    await startTask(taskId, { currentStep: "running" });
-    await assertTaskNotCanceled(taskId);
+    if (taskId) {
+      await startTask(taskId, { currentStep: "running" });
+    }
+    await assertCurrentTaskNotCanceled();
 
     if (!project) {
       throw new Error("Project not found.");
@@ -1330,7 +1372,7 @@ async function runSectionImageEditTask(
             operation: editMode === "translate" ? "visual_prompt_agent_translate_section" : editMode === "enhance" ? "visual_prompt_agent_enhance_section" : "visual_prompt_agent_repaint_section",
             signal: taskSignal,
           });
-    await assertTaskNotCanceled(taskId);
+    await assertCurrentTaskNotCanceled();
 
     let imageAsset;
     let version;
@@ -1356,7 +1398,7 @@ async function runSectionImageEditTask(
         operation: editMode === "translate" ? "translate_section_image" : editMode === "enhance" ? "enhance_section_image" : editMode === "inpaint" ? "inpaint_section_image" : "repaint_section_image",
         signal: taskSignal,
       });
-      await assertTaskNotCanceled(taskId);
+      await assertCurrentTaskNotCanceled();
 
       imageAsset = await saveGeneratedImage({
         projectId,
@@ -1376,7 +1418,7 @@ async function runSectionImageEditTask(
           primaryReferenceAssetId: effectiveReferenceAssets[0]?.id ?? null,
         },
       });
-      await assertTaskNotCanceled(taskId);
+      await assertCurrentTaskNotCanceled();
 
       usedModel = generation.model;
       generationMode = "image_api";
@@ -1418,7 +1460,7 @@ async function runSectionImageEditTask(
         contentLanguage: generationSettings.contentLanguage,
         signal: taskSignal,
       });
-      await assertTaskNotCanceled(taskId);
+      await assertCurrentTaskNotCanceled();
 
       imageAsset = await saveGeneratedImage({
         projectId,
@@ -1441,7 +1483,7 @@ async function runSectionImageEditTask(
           imageApiError: error instanceof Error ? error.message : "Unknown image edit api error",
         },
       });
-      await assertTaskNotCanceled(taskId);
+      await assertCurrentTaskNotCanceled();
 
       usedModel = fallback.model;
       generationMode = "svg_fallback";
@@ -1453,7 +1495,7 @@ async function runSectionImageEditTask(
       promptSnapshot: prompt,
       copySnapshot: section.copy,
     });
-    await assertTaskNotCanceled(taskId);
+    await assertCurrentTaskNotCanceled();
 
     await prisma.pageSection.update({
       where: { id: sectionId },
@@ -1470,19 +1512,21 @@ async function runSectionImageEditTask(
       },
     });
 
-    await completeTask(taskId, {
-      mode: "edit_image",
-      editMode,
-      targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
-      imageAssetId: imageAsset.id,
-      versionId: version.id,
-      usedModel,
-      generationMode,
-      baseImageAssetId: section.currentImageAssetId,
-      hasMask: Boolean(options?.mask),
-      editInstruction: editMode === "inpaint" ? options?.editInstruction ?? "" : undefined,
-      sourceReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
-    });
+    if (taskId) {
+      await completeTask(taskId, {
+        mode: "edit_image",
+        editMode,
+        targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
+        imageAssetId: imageAsset.id,
+        versionId: version.id,
+        usedModel,
+        generationMode,
+        baseImageAssetId: section.currentImageAssetId,
+        hasMask: Boolean(options?.mask),
+        editInstruction: editMode === "inpaint" ? options?.editInstruction ?? "" : undefined,
+        sourceReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
+      });
+    }
 
     return { imageAsset, version, usedModel, generationMode, editMode, targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined };
   } catch (error) {
@@ -1499,11 +1543,15 @@ async function runSectionImageEditTask(
         data: { status: section?.currentImageAssetId ? "SUCCESS" : "IDLE" },
       });
     } else {
-      await failTask(taskId, error instanceof Error ? error.message : "Image edit failed");
+      if (taskId) {
+        await failTask(taskId, error instanceof Error ? error.message : "Image edit failed");
+      }
     }
     throw error;
   } finally {
-    releaseTaskAbortController(taskId);
+    if (taskId) {
+      releaseTaskAbortController(taskId);
+    }
   }
 }
 
