@@ -191,6 +191,28 @@ export function AiToolboxWorkspace() {
     [checkedReferenceIds, standaloneReferences],
   );
 
+  const resetStandaloneLocalRepaint = () => {
+    setStandaloneBaseImage(null);
+    setStandaloneReferences([]);
+    setCheckedReferenceIds([]);
+    setStandaloneVersions([]);
+    setLocalRepaintRunningMode(null);
+    setLocalRepaintTaskId(null);
+    if (baseImageInputRef.current) {
+      baseImageInputRef.current.value = "";
+    }
+    if (referenceInputRef.current) {
+      referenceInputRef.current.value = "";
+    }
+  };
+
+  const handleLocalRepaintOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      resetStandaloneLocalRepaint();
+    }
+    setLocalRepaintOpen(nextOpen);
+  };
+
   const handleOpenSoon = (name: string) => {
     toast.message(`${name} 即将开放`);
   };
@@ -327,6 +349,7 @@ export function AiToolboxWorkspace() {
 
   const handleOpenTool = (name: string) => {
     if (name === "局部重绘") {
+      resetStandaloneLocalRepaint();
       setLocalRepaintOpen(true);
       return;
     }
@@ -717,7 +740,7 @@ export function AiToolboxWorkspace() {
 
       <LocalRepaintDrawer
         open={localRepaintOpen}
-        onOpenChange={setLocalRepaintOpen}
+        onOpenChange={handleLocalRepaintOpenChange}
         title="局部重绘"
         imageUrl={standaloneBaseImage?.imageUrl}
         imageTitle={standaloneBaseImage?.title ?? "待重绘图片"}
@@ -750,19 +773,34 @@ export function AiToolboxWorkspace() {
       />
       <SmartOutpaintDrawer
         open={outpaintOpen}
-        onOpenChange={setOutpaintOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setOutpaintInitialImage(null);
+          }
+          setOutpaintOpen(nextOpen);
+        }}
         initialImage={outpaintInitialImage}
         initialSeed={continueImageSeed}
       />
       <ImageToImageDrawer
         open={imageToImageOpen}
-        onOpenChange={setImageToImageOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setImageToImageInitialReferences([]);
+          }
+          setImageToImageOpen(nextOpen);
+        }}
         initialReferenceImages={imageToImageInitialReferences}
         initialSeed={continueImageSeed}
       />
       <ProductSceneDrawer
         open={productSceneOpen}
-        onOpenChange={setProductSceneOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setProductSceneInitialImage(null);
+          }
+          setProductSceneOpen(nextOpen);
+        }}
         initialProductImage={productSceneInitialImage}
         initialSeed={continueImageSeed}
       />

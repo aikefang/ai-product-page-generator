@@ -230,12 +230,19 @@ function useToolboxRunner({
     toast.success("已恢复到所选版本");
   };
 
+  const reset = useCallback(() => {
+    setRunningMode(null);
+    setTaskId(null);
+    setVersions([]);
+  }, []);
+
   return {
     runningMode,
     backgroundRunning: Boolean(taskId) || runningMode === "background",
     versions,
     run,
     activateVersion,
+    reset,
   };
 }
 
@@ -387,9 +394,25 @@ export function SmartOutpaintDrawer({
     onResultImage: setImageUrl,
   });
 
+  const resetState = useCallback(() => {
+    setFiles([]);
+    setImageUrl("");
+    setPrompt("");
+    setExpand({ top: 20, right: 20, bottom: 20, left: 20 });
+    runner.reset();
+  }, [runner.reset]);
+
+  useEffect(() => {
+    if (!open || initialImage?.url) return;
+    resetState();
+  }, [initialImage?.url, open, resetState]);
+
   useEffect(() => {
     if (!open || !initialImage?.url) return;
     let disposed = false;
+    setPrompt("");
+    setExpand({ top: 20, right: 20, bottom: 20, left: 20 });
+    runner.reset();
     setImageUrl(initialImage.url);
     void imageUrlToFile(initialImage, "outpaint-source")
       .then((file) => {
@@ -405,7 +428,7 @@ export function SmartOutpaintDrawer({
     return () => {
       disposed = true;
     };
-  }, [initialImage?.url, initialSeed, open]);
+  }, [initialImage?.url, initialSeed, open, runner.reset]);
 
   useEffect(() => {
     if (!files[0]) {
@@ -434,7 +457,12 @@ export function SmartOutpaintDrawer({
   return (
     <DrawerDialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          resetState();
+        }
+        onOpenChange(nextOpen);
+      }}
       title="智能扩图"
       width={1100}
       closeOnOverlayClick={false}
@@ -445,7 +473,10 @@ export function SmartOutpaintDrawer({
           runningMode={runner.runningMode}
           backgroundRunning={runner.backgroundRunning}
           disabled={!imageUrl}
-          onClose={() => onOpenChange(false)}
+          onClose={() => {
+            resetState();
+            onOpenChange(false);
+          }}
           onRun={submit}
         />
       }
@@ -509,9 +540,24 @@ export function ImageToImageDrawer({
     onResultImage: setLatestImage,
   });
 
+  const resetState = useCallback(() => {
+    setReferenceFiles([]);
+    setPrompt("");
+    setLatestImage("");
+    runner.reset();
+  }, [runner.reset]);
+
+  useEffect(() => {
+    if (!open || initialReferenceImages.length > 0) return;
+    resetState();
+  }, [initialReferenceImages.length, open, resetState]);
+
   useEffect(() => {
     if (!open || initialReferenceImages.length === 0) return;
     let disposed = false;
+    setPrompt("");
+    setLatestImage("");
+    runner.reset();
     void Promise.all(initialReferenceImages.map((image, index) => imageUrlToFile(image, `image-to-image-reference-${index + 1}`)))
       .then((files) => {
         if (!disposed) {
@@ -524,7 +570,7 @@ export function ImageToImageDrawer({
     return () => {
       disposed = true;
     };
-  }, [initialReferenceImages, initialSeed, open]);
+  }, [initialReferenceImages, initialSeed, open, runner.reset]);
 
   const submit = async (mode: RunMode) => {
     const referenceImages = await filesToDataUrls(referenceFiles);
@@ -538,7 +584,12 @@ export function ImageToImageDrawer({
   return (
     <DrawerDialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          resetState();
+        }
+        onOpenChange(nextOpen);
+      }}
       title="以图生图"
       width={1100}
       closeOnOverlayClick={false}
@@ -549,7 +600,10 @@ export function ImageToImageDrawer({
           runningMode={runner.runningMode}
           backgroundRunning={runner.backgroundRunning}
           disabled={referenceFiles.length === 0 && !prompt.trim()}
-          onClose={() => onOpenChange(false)}
+          onClose={() => {
+            resetState();
+            onOpenChange(false);
+          }}
           onRun={submit}
         />
       }
@@ -608,9 +662,26 @@ export function ProductSceneDrawer({
     onResultImage: setLatestImage,
   });
 
+  const resetState = useCallback(() => {
+    setProductFiles([]);
+    setSceneFiles([]);
+    setPrompt("");
+    setLatestImage("");
+    runner.reset();
+  }, [runner.reset]);
+
+  useEffect(() => {
+    if (!open || initialProductImage?.url) return;
+    resetState();
+  }, [initialProductImage?.url, open, resetState]);
+
   useEffect(() => {
     if (!open || !initialProductImage?.url) return;
     let disposed = false;
+    setSceneFiles([]);
+    setPrompt("");
+    setLatestImage("");
+    runner.reset();
     void imageUrlToFile(initialProductImage, "product-scene-source")
       .then((file) => {
         if (!disposed) {
@@ -623,7 +694,7 @@ export function ProductSceneDrawer({
     return () => {
       disposed = true;
     };
-  }, [initialProductImage, initialSeed, open]);
+  }, [initialProductImage, initialSeed, open, runner.reset]);
 
   const submit = async (mode: RunMode) => {
     if (!productFiles[0]) {
@@ -640,7 +711,12 @@ export function ProductSceneDrawer({
   return (
     <DrawerDialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          resetState();
+        }
+        onOpenChange(nextOpen);
+      }}
       title="商品换场景"
       width={1100}
       closeOnOverlayClick={false}
@@ -651,7 +727,10 @@ export function ProductSceneDrawer({
           runningMode={runner.runningMode}
           backgroundRunning={runner.backgroundRunning}
           disabled={productFiles.length === 0}
-          onClose={() => onOpenChange(false)}
+          onClose={() => {
+            resetState();
+            onOpenChange(false);
+          }}
           onRun={submit}
         />
       }
