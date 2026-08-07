@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Aperture,
+  ArrowUpRight,
   Brush,
+  Columns2,
   Eraser,
   Expand,
   History,
@@ -23,12 +25,15 @@ import {
   type LocalRepaintRunMode,
 } from "@/components/editor/local-repaint-drawer";
 import {
+  ImageEnhanceDrawer,
   ImageTranslateDrawer,
   ImageToImageDrawer,
   ProductSceneDrawer,
   SmartOutpaintDrawer,
+  UpscaleDrawer,
 } from "@/components/tools/toolbox-generation-drawers";
 import { useImagePreview } from "@/components/shared/image-preview-provider";
+import { ImageCompareDialog } from "@/components/shared/image-compare-dialog";
 import type { LocalRepaintMaskPayload, LocalRepaintPayload, LocalRepaintReference } from "@/components/editor/local-repaint-panel";
 import type { ReferenceMaskPayload } from "@/components/editor/reference-mask-selection-panel";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +42,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { DrawerDialog } from "@/components/ui/drawer-dialog";
 import { Input } from "@/components/ui/input";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
+
+type ToolboxToolCard = {
+  title: string;
+  description: string;
+  icon: typeof Brush;
+  recordToolType?: string | null;
+  available: boolean;
+};
 
 type ToolboxTaskPayload = {
   id: string;
@@ -78,6 +91,12 @@ type ToolboxRecord = {
   createdAt: string;
 };
 
+type ToolboxRecordsPage = {
+  records: ToolboxRecord[];
+  nextCursor?: string | null;
+  hasMore?: boolean;
+};
+
 const toolboxToolTypeLabels: Record<string, string> = {
   LOCAL_REPAINT: "局部重绘",
   OUTPAINT: "智能扩图",
@@ -99,66 +118,90 @@ const recordStatusLabels: Record<string, string> = {
   CANCELED: "已取消",
 };
 
-const tools = [
+const recordsPageSize = 30;
+
+const tools: ToolboxToolCard[] = [
   {
     title: "局部重绘",
     description: "涂抹局部区域，只重新生成需要修改的位置。",
     icon: Brush,
     recordToolType: "LOCAL_REPAINT",
+    available: true,
   },
   {
     title: "智能扩图",
     description: "在原图基础上向外延展画布，补全场景和背景。",
     icon: Expand,
     recordToolType: "OUTPAINT",
+    available: true,
   },
   {
     title: "以图生图",
     description: "参考商品图，生成新场景、新角度或新动作图片。",
     icon: ImagePlus,
     recordToolType: "IMAGE_TO_IMAGE",
-  },
-  {
-    title: "文生图",
-    description: "通过文字描述生成商品视觉、场景图或创意图。",
-    icon: Sparkles,
-    recordToolType: "TEXT_TO_IMAGE",
-  },
-  {
-    title: "图片增强",
-    description: "提升清晰度、质感、光影和整体视觉表现。",
-    icon: Aperture,
-    recordToolType: "ENHANCE",
-  },
-  {
-    title: "背景替换",
-    description: "保留主体，替换成更适合转化的背景环境。",
-    icon: Mountain,
-    recordToolType: "BACKGROUND_REPLACE",
+    available: true,
   },
   {
     title: "商品换场景",
     description: "把商品自然放入家居、户外、办公等指定场景。",
     icon: Image,
     recordToolType: "PRODUCT_SCENE",
+    available: true,
+  },
+  {
+    title: "图片翻译",
+    description: "翻译图中文字，并尽量保留商品、构图和原有版式。",
+    icon: Languages,
+    recordToolType: "IMAGE_TRANSLATE",
+    available: true,
+  },
+  {
+    title: "图片去水印/瑕疵",
+    description: "去除水印、划痕、污点和轻微瑕疵，尽量保留原图结构。",
+    icon: Sparkles,
+    available: false,
+  },
+  {
+    title: "商品&场景融合",
+    description: "把商品自然融入场景氛围，适合做商品图与环境融合。",
+    icon: Image,
+    available: false,
+  },
+  {
+    title: "文生图",
+    description: "通过文字描述生成商品视觉、场景图或创意图。",
+    icon: Sparkles,
+    recordToolType: "TEXT_TO_IMAGE",
+    available: false,
+  },
+  {
+    title: "图片增强",
+    description: "提升清晰度、质感、光影和整体视觉表现。",
+    icon: Aperture,
+    recordToolType: "ENHANCE",
+    available: true,
+  },
+  {
+    title: "背景替换",
+    description: "保留主体，替换成更适合转化的背景环境。",
+    icon: Mountain,
+    recordToolType: "BACKGROUND_REPLACE",
+    available: false,
   },
   {
     title: "高清放大",
     description: "对图片进行高清修复和等比例放大。",
     icon: Maximize2,
     recordToolType: "UPSCALE",
+    available: true,
   },
   {
     title: "抠图去背景",
     description: "自动识别主体，生成透明底或纯色底商品图。",
     icon: Eraser,
     recordToolType: "REMOVE_BACKGROUND",
-  },
-  {
-    title: "图片翻译",
-    description: "识别图中文字并转换成目标语言，尽量保持原排版。",
-    icon: Languages,
-    recordToolType: "IMAGE_TRANSLATE",
+    available: false,
   },
 ];
 
@@ -168,15 +211,23 @@ export function AiToolboxWorkspace() {
   const [imageToImageOpen, setImageToImageOpen] = useState(false);
   const [productSceneOpen, setProductSceneOpen] = useState(false);
   const [imageTranslateOpen, setImageTranslateOpen] = useState(false);
+  const [imageEnhanceOpen, setImageEnhanceOpen] = useState(false);
+  const [upscaleOpen, setUpscaleOpen] = useState(false);
   const [recordsOpen, setRecordsOpen] = useState(false);
   const [recordFilterToolType, setRecordFilterToolType] = useState<string | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
+  const [recordsLoadingMore, setRecordsLoadingMore] = useState(false);
   const [toolboxRecords, setToolboxRecords] = useState<ToolboxRecord[]>([]);
+  const [recordsNextCursor, setRecordsNextCursor] = useState<string | null>(null);
+  const [recordsHasMore, setRecordsHasMore] = useState(false);
+  const [diffRecord, setDiffRecord] = useState<ToolboxRecord | null>(null);
   const [continueImageSeed, setContinueImageSeed] = useState(0);
   const [outpaintInitialImage, setOutpaintInitialImage] = useState<{ url: string; title?: string } | null>(null);
   const [imageToImageInitialReferences, setImageToImageInitialReferences] = useState<Array<{ url: string; title?: string }>>([]);
   const [productSceneInitialImage, setProductSceneInitialImage] = useState<{ url: string; title?: string } | null>(null);
   const [imageTranslateInitialImage, setImageTranslateInitialImage] = useState<{ url: string; title?: string } | null>(null);
+  const [imageEnhanceInitialImage, setImageEnhanceInitialImage] = useState<{ url: string; title?: string } | null>(null);
+  const [upscaleInitialImage, setUpscaleInitialImage] = useState<{ url: string; title?: string } | null>(null);
   const [standaloneBaseImage, setStandaloneBaseImage] = useState<{
     title: string;
     imageUrl: string;
@@ -188,6 +239,7 @@ export function AiToolboxWorkspace() {
   const [localRepaintTaskId, setLocalRepaintTaskId] = useState<string | null>(null);
   const baseImageInputRef = useRef<HTMLInputElement | null>(null);
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
+  const recordsLoadMoreRef = useRef<HTMLDivElement | null>(null);
   const { openImagePreview } = useImagePreview();
 
   const selectedReferences = useMemo(
@@ -235,31 +287,57 @@ export function AiToolboxWorkspace() {
     toast.message(`${name} 即将开放`);
   };
 
-  const loadToolboxRecords = async (toolType: string | null = recordFilterToolType) => {
-    setRecordsLoading(true);
+  const loadToolboxRecords = useCallback(async ({
+    toolType = recordFilterToolType,
+    cursor = null,
+    reset = true,
+  }: {
+    toolType?: string | null;
+    cursor?: string | null;
+    reset?: boolean;
+  } = {}) => {
+    if (reset) {
+      setRecordsLoading(true);
+    } else {
+      setRecordsLoadingMore(true);
+    }
     try {
-      const params = new URLSearchParams({ limit: "120" });
+      const params = new URLSearchParams({ limit: String(recordsPageSize) });
       if (toolType) {
         params.set("toolType", toolType);
+      }
+      if (cursor) {
+        params.set("cursor", cursor);
       }
       const response = await fetch(`/api/ai-toolbox/records?${params.toString()}`, { cache: "no-store" });
       const payload = await response.json();
       if (!payload.success) {
         throw new Error(payload.error?.message ?? "生成记录加载失败");
       }
-      setToolboxRecords(payload.data ?? []);
+      const page = payload.data as ToolboxRecordsPage;
+      const nextRecords = Array.isArray(page.records) ? page.records : [];
+      setToolboxRecords((current) => (reset ? nextRecords : [...current, ...nextRecords]));
+      setRecordsNextCursor(page.nextCursor ?? null);
+      setRecordsHasMore(Boolean(page.hasMore));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "生成记录加载失败");
     } finally {
-      setRecordsLoading(false);
+      if (reset) {
+        setRecordsLoading(false);
+      } else {
+        setRecordsLoadingMore(false);
+      }
     }
-  };
+  }, [recordFilterToolType]);
 
   const openRecordsDrawer = (toolType: string | null = null) => {
     setRecordFilterToolType(toolType);
     setToolboxRecords([]);
+    setRecordsNextCursor(null);
+    setRecordsHasMore(false);
+    setDiffRecord(null);
     setRecordsOpen(true);
-    void loadToolboxRecords(toolType);
+    void loadToolboxRecords({ toolType, reset: true });
   };
 
   const formatRecordTime = (value: string) =>
@@ -279,6 +357,14 @@ export function AiToolboxWorkspace() {
       title: `${toolboxToolTypeLabels[record.toolType] ?? record.toolType}${label}`,
       meta: `${record.model ?? "未知模型"} · ${formatRecordTime(record.createdAt)}`,
     });
+  };
+
+  const openRecordDiff = (record: ToolboxRecord) => {
+    if (!record.inputImageUrl || !record.outputImageUrl) {
+      toast.error("这条记录需要同时有原图和结果图才能对比。");
+      return;
+    }
+    setDiffRecord(record);
   };
 
   const continueFromRecord = (record: ToolboxRecord) => {
@@ -328,6 +414,20 @@ export function AiToolboxWorkspace() {
       return;
     }
 
+    if (record.toolType === "ENHANCE") {
+      setImageEnhanceInitialImage({ title, url: imageUrl });
+      setImageEnhanceOpen(true);
+      toast.success("已带入图片，可以继续增强");
+      return;
+    }
+
+    if (record.toolType === "UPSCALE") {
+      setUpscaleInitialImage({ title, url: imageUrl });
+      setUpscaleOpen(true);
+      toast.success("已带入图片，可以继续高清放大");
+      return;
+    }
+
     toast.message(`${toolboxToolTypeLabels[record.toolType] ?? "该工具"} 即将开放，暂不支持继续处理。`);
   };
 
@@ -371,6 +471,36 @@ export function AiToolboxWorkspace() {
     };
   }, [localRepaintTaskId]);
 
+  useEffect(() => {
+    if (!recordsOpen || !recordsHasMore || recordsLoading || recordsLoadingMore || !recordsNextCursor) return;
+
+    const target = recordsLoadMoreRef.current;
+    if (!target) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0]?.isIntersecting) return;
+        void loadToolboxRecords({
+          toolType: recordFilterToolType,
+          cursor: recordsNextCursor,
+          reset: false,
+        });
+      },
+      { root: null, rootMargin: "240px 0px" },
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [
+    loadToolboxRecords,
+    recordFilterToolType,
+    recordsHasMore,
+    recordsLoading,
+    recordsLoadingMore,
+    recordsNextCursor,
+    recordsOpen,
+  ]);
+
   const handleOpenTool = (name: string) => {
     if (name === "局部重绘") {
       resetStandaloneLocalRepaint();
@@ -395,6 +525,16 @@ export function AiToolboxWorkspace() {
     if (name === "图片翻译") {
       setImageTranslateInitialImage(null);
       setImageTranslateOpen(true);
+      return;
+    }
+    if (name === "图片增强") {
+      setImageEnhanceInitialImage(null);
+      setImageEnhanceOpen(true);
+      return;
+    }
+    if (name === "高清放大") {
+      setUpscaleInitialImage(null);
+      setUpscaleOpen(true);
       return;
     }
 
@@ -693,6 +833,10 @@ export function AiToolboxWorkspace() {
   const recordDrawerToolLabel = recordFilterToolType
     ? (toolboxToolTypeLabels[recordFilterToolType] ?? recordFilterToolType)
     : null;
+  const orderedTools = useMemo(
+    () => [...tools].sort((left, right) => Number(right.available) - Number(left.available)),
+    [],
+  );
 
   return (
     <div>
@@ -712,10 +856,10 @@ export function AiToolboxWorkspace() {
         </Button>
       </div>
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-        {tools.map((tool) => {
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
+        {orderedTools.map((tool) => {
           const Icon = tool.icon;
-          const enabled = ["局部重绘", "智能扩图", "以图生图", "商品换场景", "图片翻译"].includes(tool.title);
+          const enabled = tool.available;
           return (
             <Card
               key={tool.title}
@@ -728,46 +872,52 @@ export function AiToolboxWorkspace() {
                   handleOpenTool(tool.title);
                 }
               }}
-              className="group cursor-pointer overflow-hidden rounded-3xl border-slate-200 bg-white transition-all duration-200 hover:-translate-y-1 hover:border-teal-200 hover:shadow-xl hover:shadow-teal-950/5 dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-teal-300/30"
+              className="group flex min-h-[218px] cursor-pointer flex-col overflow-hidden rounded-2xl border-slate-200 bg-white transition-all duration-200 hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-lg hover:shadow-teal-950/5 dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-teal-300/30"
             >
-              <CardHeader className="space-y-4">
+              <CardHeader className="gap-3 p-4 pb-2">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-50 text-teal-700 transition-colors group-hover:bg-teal-600 group-hover:text-white dark:bg-teal-400/10 dark:text-teal-200">
-                    <Icon className="h-5 w-5" />
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-50 text-teal-700 transition-colors group-hover:bg-teal-600 group-hover:text-white dark:bg-teal-400/10 dark:text-teal-200">
+                    <Icon className="h-[18px] w-[18px]" />
                   </div>
-                  <Badge variant={enabled ? "success" : "outline"}>{enabled ? "可试用" : "即将开放"}</Badge>
+                  <Badge variant={enabled ? "success" : "outline"}>{enabled ? "已开放" : "即将开放"}</Badge>
                 </div>
                 <div>
-                  <CardTitle className="text-base">{tool.title}</CardTitle>
-                  <CardDescription className="mt-2 min-h-10 text-sm leading-5">
+                  <CardTitle className="text-[15px]">{tool.title}</CardTitle>
+                  <CardDescription className="mt-1 line-clamp-2 min-h-10 text-[13px] leading-5">
                     {tool.description}
                   </CardDescription>
                 </div>
               </CardHeader>
-              <CardContent className="grid gap-2 pt-0">
+              <CardContent className="mt-auto flex items-center gap-2 p-4 pt-2">
                 <Button
                   type="button"
                   variant="outline"
-                  className="w-full rounded-2xl"
+                  size="sm"
+                  className="h-9 flex-1 rounded-xl"
                   onClick={(event) => {
                     event.stopPropagation();
                     handleOpenTool(tool.title);
                   }}
                 >
                   {enabled ? "打开工具" : "查看能力"}
+                  <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
                 </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="w-full rounded-2xl text-muted-foreground hover:text-foreground"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    openRecordsDrawer(tool.recordToolType);
-                  }}
-                >
-                  <History className="mr-2 h-4 w-4" />
-                  查看生成记录
-                </Button>
+                {tool.recordToolType ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-9 w-9 shrink-0 rounded-xl p-0 text-muted-foreground hover:text-foreground"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openRecordsDrawer(tool.recordToolType);
+                    }}
+                    aria-label={`查看${tool.title}生成记录`}
+                    title="查看生成记录"
+                  >
+                    <History className="h-4 w-4" />
+                  </Button>
+                ) : null}
               </CardContent>
             </Card>
           );
@@ -851,6 +1001,28 @@ export function AiToolboxWorkspace() {
         initialImage={imageTranslateInitialImage}
         initialSeed={continueImageSeed}
       />
+      <ImageEnhanceDrawer
+        open={imageEnhanceOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setImageEnhanceInitialImage(null);
+          }
+          setImageEnhanceOpen(nextOpen);
+        }}
+        initialImage={imageEnhanceInitialImage}
+        initialSeed={continueImageSeed}
+      />
+      <UpscaleDrawer
+        open={upscaleOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setUpscaleInitialImage(null);
+          }
+          setUpscaleOpen(nextOpen);
+        }}
+        initialImage={upscaleInitialImage}
+        initialSeed={continueImageSeed}
+      />
       <DrawerDialog
         open={recordsOpen}
         onOpenChange={setRecordsOpen}
@@ -867,7 +1039,12 @@ export function AiToolboxWorkspace() {
             <Button type="button" variant="outline" className="w-[100px]" onClick={() => setRecordsOpen(false)}>
               关闭
             </Button>
-            <Button type="button" className="w-[110px]" onClick={() => void loadToolboxRecords()} disabled={recordsLoading}>
+            <Button
+              type="button"
+              className="w-[110px]"
+              onClick={() => void loadToolboxRecords({ reset: true })}
+              disabled={recordsLoading}
+            >
               {recordsLoading ? <RefreshCw className="mr-1.5 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-1.5 h-4 w-4" />}
               刷新
             </Button>
@@ -896,8 +1073,9 @@ export function AiToolboxWorkspace() {
           </div>
         ) : (
           <div className="overflow-hidden rounded-2xl border border-border bg-card">
-            <div className="hidden grid-cols-[92px_92px_112px_140px_minmax(0,1fr)_150px_96px] gap-3 border-b border-border bg-muted/40 px-4 py-3 text-xs font-medium text-muted-foreground md:grid">
+            <div className="hidden grid-cols-[92px_70px_92px_112px_130px_minmax(130px,1fr)_150px_96px] gap-3 border-b border-border bg-muted/40 px-4 py-3 text-xs font-medium text-muted-foreground md:grid">
               <span>原图</span>
+              <span>对比</span>
               <span>结果图</span>
               <span>类型</span>
               <span>生成模型</span>
@@ -908,7 +1086,7 @@ export function AiToolboxWorkspace() {
             {toolboxRecords.map((record) => (
               <div
                 key={record.id}
-                className="grid grid-cols-1 gap-3 border-b border-border px-4 py-3 last:border-b-0 md:grid-cols-[92px_92px_112px_140px_minmax(0,1fr)_150px_96px]"
+                className="grid grid-cols-1 gap-3 border-b border-border px-4 py-3 last:border-b-0 md:grid-cols-[92px_70px_92px_112px_130px_minmax(130px,1fr)_150px_96px]"
               >
                 <div>
                   <p className="mb-1 text-xs text-muted-foreground md:hidden">原图</p>
@@ -930,6 +1108,20 @@ export function AiToolboxWorkspace() {
                       暂无图片
                     </div>
                   )}
+                </div>
+                <div className="min-w-0">
+                  <p className="mb-1 text-xs text-muted-foreground md:hidden">对比</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-[68px] rounded-xl px-2"
+                    onClick={() => openRecordDiff(record)}
+                    disabled={!record.inputImageUrl || !record.outputImageUrl}
+                  >
+                    <Columns2 className="mr-1.5 h-3.5 w-3.5" />
+                    对比
+                  </Button>
                 </div>
                 <div>
                   <p className="mb-1 text-xs text-muted-foreground md:hidden">结果图</p>
@@ -969,12 +1161,14 @@ export function AiToolboxWorkspace() {
                 <div className="min-w-0">
                   <p className="text-xs text-muted-foreground md:hidden">Prompt</p>
                   {record.prompt ? (
-                    <p className="line-clamp-3 text-sm leading-6 text-foreground">{record.prompt}</p>
+                    <p className="line-clamp-3 min-w-0 break-words text-sm leading-6 text-foreground [overflow-wrap:anywhere]">
+                      {record.prompt}
+                    </p>
                   ) : (
                     <p className="text-sm text-muted-foreground">-</p>
                   )}
                   {record.errorMessage ? (
-                    <p className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs leading-5 text-red-600 dark:text-red-300">
+                    <p className="mt-2 max-w-full whitespace-pre-wrap break-words rounded-lg bg-red-500/10 p-2 text-xs leading-5 text-red-600 [overflow-wrap:anywhere] dark:text-red-300">
                       {record.errorMessage}
                     </p>
                   ) : null}
@@ -983,7 +1177,7 @@ export function AiToolboxWorkspace() {
                   <p className="text-xs text-muted-foreground md:hidden">生成时间</p>
                   <p className="text-sm text-foreground">{formatRecordTime(record.createdAt)}</p>
                 </div>
-                <div className="flex items-start">
+                <div className="flex flex-wrap items-start gap-2 md:flex-nowrap">
                   <Button
                     type="button"
                     variant="outline"
@@ -996,9 +1190,41 @@ export function AiToolboxWorkspace() {
                 </div>
               </div>
             ))}
+            <div ref={recordsLoadMoreRef} className="flex min-h-14 items-center justify-center px-4 py-3 text-xs text-muted-foreground">
+              {recordsLoadingMore ? (
+                <span className="inline-flex items-center gap-2">
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  正在加载更多记录
+                </span>
+              ) : recordsHasMore ? (
+                "继续下滑加载更多"
+              ) : (
+                "已加载全部记录"
+              )}
+            </div>
           </div>
         )}
       </DrawerDialog>
+      <ImageCompareDialog
+        open={Boolean(diffRecord)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setDiffRecord(null);
+          }
+        }}
+        title={diffRecord ? `${toolboxToolTypeLabels[diffRecord.toolType] ?? diffRecord.toolType}对比` : "图片对比"}
+        description={diffRecord ? `${diffRecord.model ?? "未知模型"} · ${formatRecordTime(diffRecord.createdAt)}` : undefined}
+        beforeImage={diffRecord?.inputImageUrl ? { url: diffRecord.inputImageUrl, title: "原图" } : null}
+        afterImage={diffRecord?.outputImageUrl ? { url: diffRecord.outputImageUrl, title: "结果图" } : null}
+        beforeLabel="原图"
+        afterLabel="结果图"
+        previewButtonLabel="查看结果图"
+        onPreviewImage={(image, role) => {
+          if (!diffRecord) return;
+          const label = role === "before" ? "原图" : "结果图";
+          openRecordImagePreview(diffRecord, image.url, label);
+        }}
+      />
     </div>
   );
 }

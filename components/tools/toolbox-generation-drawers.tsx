@@ -951,6 +951,405 @@ export function ProductSceneDrawer({
   );
 }
 
+export function ImageEnhanceDrawer({
+  open,
+  onOpenChange,
+  initialImage,
+  initialSeed,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initialImage?: InitialToolboxImage | null;
+  initialSeed?: number;
+}) {
+  const [sourceFiles, setSourceFiles] = useState<File[]>([]);
+  const [imageUrl, setImageUrl] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [enhancementMode, setEnhancementMode] = useState<"auto" | "clarity" | "color" | "product" | "portrait">("auto");
+  const [intensity, setIntensity] = useState<"natural" | "balanced" | "strong">("balanced");
+  const fileReadSeqRef = useRef(0);
+  const runner = useToolboxRunner({
+    endpoint: "/api/ai-toolbox/enhance",
+    resultTitlePrefix: "图片增强",
+    onResultImage: setImageUrl,
+  });
+
+  const resetState = useCallback(() => {
+    fileReadSeqRef.current += 1;
+    setSourceFiles([]);
+    setImageUrl("");
+    setPrompt("");
+    setEnhancementMode("auto");
+    setIntensity("balanced");
+    runner.reset();
+  }, [runner.reset]);
+
+  const handleSourceFilesChange = useCallback((nextFiles: File[]) => {
+    setSourceFiles(nextFiles);
+    fileReadSeqRef.current += 1;
+    const readSeq = fileReadSeqRef.current;
+    const file = nextFiles[0];
+
+    if (!file) {
+      setImageUrl("");
+      runner.reset();
+      return;
+    }
+
+    void fileToDataUrl(file)
+      .then((url) => {
+        if (fileReadSeqRef.current !== readSeq) return;
+        setImageUrl(url);
+        runner.setOriginalVersion({
+          url,
+          title: file.name || "原始图片",
+        });
+      })
+      .catch(() => {
+        if (fileReadSeqRef.current !== readSeq) return;
+        setImageUrl("");
+        runner.reset();
+        toast.error("图片读取失败，请重新选择图片。");
+      });
+  }, [runner.reset, runner.setOriginalVersion]);
+
+  useEffect(() => {
+    if (!open || initialImage?.url) return;
+    resetState();
+  }, [initialImage?.url, open, resetState]);
+
+  useEffect(() => {
+    if (!open || !initialImage?.url) return;
+    let disposed = false;
+    setPrompt("");
+    setEnhancementMode("auto");
+    setIntensity("balanced");
+    runner.reset();
+    setImageUrl(initialImage.url);
+    runner.setOriginalVersion(initialImage);
+    fileReadSeqRef.current += 1;
+    void imageUrlToFile(initialImage, "image-enhance-source")
+      .then((file) => {
+        if (!disposed) {
+          setSourceFiles([file]);
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setSourceFiles([]);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [initialImage, initialSeed, open, runner.reset, runner.setOriginalVersion]);
+
+  const submit = async (mode: RunMode) => {
+    if (!imageUrl) {
+      toast.error("请先上传一张需要增强的图片。");
+      return;
+    }
+    await runner.run(mode, { image: imageUrl, prompt, enhancementMode, intensity });
+  };
+
+  return (
+    <DrawerDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          resetState();
+        }
+        onOpenChange(nextOpen);
+      }}
+      title="图片增强"
+      width={1100}
+      closeOnOverlayClick={false}
+      footer={
+        <DrawerFooter
+          syncLabel="立即增强"
+          backgroundLabel="后台增强"
+          runningMode={runner.runningMode}
+          backgroundRunning={runner.backgroundRunning}
+          disabled={!imageUrl}
+          onClose={() => {
+            resetState();
+            onOpenChange(false);
+          }}
+          onRun={submit}
+        />
+      }
+    >
+      <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-h-0 overflow-auto rounded-2xl border border-border bg-muted/20 p-4">
+          {imageUrl ? (
+            <div className="flex min-h-[520px] items-center justify-center rounded-2xl border border-border bg-background p-3">
+              <img src={imageUrl} alt="图片增强预览" className="max-h-[560px] max-w-full rounded-xl object-contain shadow-sm" />
+            </div>
+          ) : (
+            <ImageUploadDropzone
+              id="toolbox-image-enhance-source"
+              files={sourceFiles}
+              onFilesChange={handleSourceFilesChange}
+              acceptPagePaste
+              title="上传需要增强的图片"
+              description="适合发灰、噪点、轻微模糊、光影不足或质感不够的图片。"
+              minHeightClassName="min-h-[520px]"
+            />
+          )}
+        </div>
+        <div className="min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-card p-4">
+          {imageUrl ? (
+            <ImageUploadDropzone
+              id="toolbox-image-enhance-replace"
+              files={sourceFiles}
+              onFilesChange={handleSourceFilesChange}
+              acceptPagePaste
+              title="更换图片"
+              description="重新上传后会以新图作为增强原图。"
+              minHeightClassName="min-h-[160px]"
+            />
+          ) : null}
+          <div className="space-y-2">
+            <Label htmlFor="toolbox-image-enhance-mode" className="text-xs text-muted-foreground">
+              增强方向
+            </Label>
+            <select
+              id="toolbox-image-enhance-mode"
+              value={enhancementMode}
+              onChange={(event) => setEnhancementMode(event.target.value as typeof enhancementMode)}
+              className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-ring dark:bg-white/6 dark:text-slate-100"
+            >
+              <option value="auto">智能平衡</option>
+              <option value="clarity">清晰锐化</option>
+              <option value="color">色彩光影</option>
+              <option value="product">商品质感</option>
+              <option value="portrait">人像自然</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="toolbox-image-enhance-intensity" className="text-xs text-muted-foreground">
+              增强强度
+            </Label>
+            <select
+              id="toolbox-image-enhance-intensity"
+              value={intensity}
+              onChange={(event) => setIntensity(event.target.value as typeof intensity)}
+              className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-ring dark:bg-white/6 dark:text-slate-100"
+            >
+              <option value="natural">自然</option>
+              <option value="balanced">均衡</option>
+              <option value="strong">强增强</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">补充要求（非必填）</Label>
+            <Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：压低高光，保留产品原本颜色，让金属边缘更干净。" className="min-h-[120px]" />
+          </div>
+          <VersionPanel versions={runner.versions} onActivate={runner.activateVersion} />
+        </div>
+      </div>
+    </DrawerDialog>
+  );
+}
+
+export function UpscaleDrawer({
+  open,
+  onOpenChange,
+  initialImage,
+  initialSeed,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initialImage?: InitialToolboxImage | null;
+  initialSeed?: number;
+}) {
+  const [sourceFiles, setSourceFiles] = useState<File[]>([]);
+  const [imageUrl, setImageUrl] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [scale, setScale] = useState<2 | 4>(2);
+  const [detailMode, setDetailMode] = useState<"standard" | "product" | "text">("standard");
+  const fileReadSeqRef = useRef(0);
+  const runner = useToolboxRunner({
+    endpoint: "/api/ai-toolbox/upscale",
+    resultTitlePrefix: "高清放大",
+    onResultImage: setImageUrl,
+  });
+
+  const resetState = useCallback(() => {
+    fileReadSeqRef.current += 1;
+    setSourceFiles([]);
+    setImageUrl("");
+    setPrompt("");
+    setScale(2);
+    setDetailMode("standard");
+    runner.reset();
+  }, [runner.reset]);
+
+  const handleSourceFilesChange = useCallback((nextFiles: File[]) => {
+    setSourceFiles(nextFiles);
+    fileReadSeqRef.current += 1;
+    const readSeq = fileReadSeqRef.current;
+    const file = nextFiles[0];
+
+    if (!file) {
+      setImageUrl("");
+      runner.reset();
+      return;
+    }
+
+    void fileToDataUrl(file)
+      .then((url) => {
+        if (fileReadSeqRef.current !== readSeq) return;
+        setImageUrl(url);
+        runner.setOriginalVersion({
+          url,
+          title: file.name || "原始图片",
+        });
+      })
+      .catch(() => {
+        if (fileReadSeqRef.current !== readSeq) return;
+        setImageUrl("");
+        runner.reset();
+        toast.error("图片读取失败，请重新选择图片。");
+      });
+  }, [runner.reset, runner.setOriginalVersion]);
+
+  useEffect(() => {
+    if (!open || initialImage?.url) return;
+    resetState();
+  }, [initialImage?.url, open, resetState]);
+
+  useEffect(() => {
+    if (!open || !initialImage?.url) return;
+    let disposed = false;
+    setPrompt("");
+    setScale(2);
+    setDetailMode("standard");
+    runner.reset();
+    setImageUrl(initialImage.url);
+    runner.setOriginalVersion(initialImage);
+    fileReadSeqRef.current += 1;
+    void imageUrlToFile(initialImage, "upscale-source")
+      .then((file) => {
+        if (!disposed) {
+          setSourceFiles([file]);
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setSourceFiles([]);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [initialImage, initialSeed, open, runner.reset, runner.setOriginalVersion]);
+
+  const submit = async (mode: RunMode) => {
+    if (!imageUrl) {
+      toast.error("请先上传一张需要高清放大的图片。");
+      return;
+    }
+    await runner.run(mode, { image: imageUrl, prompt, scale, detailMode });
+  };
+
+  return (
+    <DrawerDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          resetState();
+        }
+        onOpenChange(nextOpen);
+      }}
+      title="高清放大"
+      width={1100}
+      closeOnOverlayClick={false}
+      footer={
+        <DrawerFooter
+          syncLabel="立即放大"
+          backgroundLabel="后台放大"
+          runningMode={runner.runningMode}
+          backgroundRunning={runner.backgroundRunning}
+          disabled={!imageUrl}
+          onClose={() => {
+            resetState();
+            onOpenChange(false);
+          }}
+          onRun={submit}
+        />
+      }
+    >
+      <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-h-0 overflow-auto rounded-2xl border border-border bg-muted/20 p-4">
+          {imageUrl ? (
+            <div className="flex min-h-[520px] items-center justify-center rounded-2xl border border-border bg-background p-3">
+              <img src={imageUrl} alt="高清放大预览" className="max-h-[560px] max-w-full rounded-xl object-contain shadow-sm" />
+            </div>
+          ) : (
+            <ImageUploadDropzone
+              id="toolbox-upscale-source"
+              files={sourceFiles}
+              onFilesChange={handleSourceFilesChange}
+              acceptPagePaste
+              title="上传需要放大的图片"
+              description="适合低分辨率商品图、头像、详情页素材或印刷前素材。"
+              minHeightClassName="min-h-[520px]"
+            />
+          )}
+        </div>
+        <div className="min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-card p-4">
+          {imageUrl ? (
+            <ImageUploadDropzone
+              id="toolbox-upscale-replace"
+              files={sourceFiles}
+              onFilesChange={handleSourceFilesChange}
+              acceptPagePaste
+              title="更换图片"
+              description="重新上传后会以新图作为放大原图。"
+              minHeightClassName="min-h-[160px]"
+            />
+          ) : null}
+          <div className="space-y-2">
+            <Label htmlFor="toolbox-upscale-scale" className="text-xs text-muted-foreground">
+              放大倍率
+            </Label>
+            <select
+              id="toolbox-upscale-scale"
+              value={scale}
+              onChange={(event) => setScale(Number(event.target.value) === 4 ? 4 : 2)}
+              className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-ring dark:bg-white/6 dark:text-slate-100"
+            >
+              <option value={2}>2x</option>
+              <option value={4}>4x</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="toolbox-upscale-detail-mode" className="text-xs text-muted-foreground">
+              细节模式
+            </Label>
+            <select
+              id="toolbox-upscale-detail-mode"
+              value={detailMode}
+              onChange={(event) => setDetailMode(event.target.value as typeof detailMode)}
+              className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-ring dark:bg-white/6 dark:text-slate-100"
+            >
+              <option value="standard">通用细节</option>
+              <option value="product">商品细节</option>
+              <option value="text">文字图形</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">补充要求（非必填）</Label>
+            <Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：保持包装文字不变，让纹理更清晰，减少压缩噪点。" className="min-h-[120px]" />
+          </div>
+          <VersionPanel versions={runner.versions} onActivate={runner.activateVersion} />
+        </div>
+      </div>
+    </DrawerDialog>
+  );
+}
+
 export function ImageTranslateDrawer({
   open,
   onOpenChange,

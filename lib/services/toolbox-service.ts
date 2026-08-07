@@ -89,6 +89,20 @@ export type ToolboxImageTranslateInput = {
   targetLanguage: ContentLanguage;
 };
 
+export type ToolboxImageEnhanceInput = {
+  image: string;
+  prompt?: string;
+  enhancementMode?: "auto" | "clarity" | "color" | "product" | "portrait";
+  intensity?: "natural" | "balanced" | "strong";
+};
+
+export type ToolboxUpscaleInput = {
+  image: string;
+  scale?: 2 | 4;
+  prompt?: string;
+  detailMode?: "standard" | "product" | "text";
+};
+
 export type ToolboxLocalRepaintInstructionInput = {
   image: string;
   baseMask: string;
@@ -258,6 +272,32 @@ function getOutpaintEditSize(width: number, height: number) {
       distance: Math.abs(Math.log(ratio / candidate.ratio)),
     }))
     .sort((a, b) => a.distance - b.distance)[0]!.size;
+}
+
+function getClosestImageEditSize(width: number, height: number) {
+  return getOutpaintEditSize(width, height);
+}
+
+function summarizeImageEnhanceFailure(error: unknown) {
+  const detail = error instanceof Error ? error.message : "Unknown image enhance error";
+  if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
+    return "当前 API Key 的图片增强额度已用尽。请前往代理商控制台提高或移除月度限额，或更换可用的 API Key。";
+  }
+  if (/timed out|aborterror|network error|fetch failed|gateway-timeout|gateway time-out|504/i.test(detail)) {
+    return "当前 Provider 请求超时或网络异常，请稍后重试。";
+  }
+  return `当前 Provider 没有可用的图片编辑能力，或不支持基于原图进行图片增强。请在 Provider 设置中选择支持图片编辑的模型。原因摘要：${detail}`;
+}
+
+function summarizeUpscaleFailure(error: unknown) {
+  const detail = error instanceof Error ? error.message : "Unknown image upscale error";
+  if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
+    return "当前 API Key 的高清放大额度已用尽。请前往代理商控制台提高或移除月度限额，或更换可用的 API Key。";
+  }
+  if (/timed out|aborterror|network error|fetch failed|gateway-timeout|gateway time-out|504/i.test(detail)) {
+    return "当前 Provider 请求超时或网络异常，请稍后重试。";
+  }
+  return `当前 Provider 没有可用的图片编辑能力，或不支持基于原图进行高清修复。请在 Provider 设置中选择支持图片编辑的模型。原因摘要：${detail}`;
 }
 
 function summarizeOutpaintFailure(error: unknown) {
@@ -435,8 +475,16 @@ async function finalizeOutpaintResult(
     .toBuffer();
 }
 
+type GeneralToolboxToolType =
+  | "OUTPAINT"
+  | "IMAGE_TO_IMAGE"
+  | "PRODUCT_SCENE"
+  | "IMAGE_TRANSLATE"
+  | "ENHANCE"
+  | "UPSCALE";
+
 async function createToolboxRecord(input: {
-  toolType: "OUTPAINT" | "IMAGE_TO_IMAGE" | "PRODUCT_SCENE" | "IMAGE_TRANSLATE";
+  toolType: GeneralToolboxToolType;
   sourceImage?: string | null;
   prompt?: string | null;
   model?: string | null;
@@ -466,7 +514,7 @@ async function createToolboxRecord(input: {
 
 async function findToolboxRecordByTaskId(
   taskId: string,
-  toolType: "OUTPAINT" | "IMAGE_TO_IMAGE" | "PRODUCT_SCENE" | "IMAGE_TRANSLATE",
+  toolType: GeneralToolboxToolType,
 ) {
   return toolboxRecordClient().findFirst({
     where: { taskId, toolType },
@@ -574,6 +622,170 @@ async function runImageTranslateModel(input: ToolboxImageTranslateInput): Promis
     models.length === 0
       ? "当前没有可用的图片编辑模型。"
       : summarizeImageTranslateFailure(new Error(errors.join(" | "))),
+  );
+}
+
+async function runImageEnhanceModel(input: ToolboxImageEnhanceInput): Promise<ToolboxGenerationResult & {
+  outputImagePath: string;
+  prompt: string;
+  metadata: Record<string, unknown>;
+}> {
+  const { provider, adapter } = await getProviderAdapter();
+  const models = getImageEditModels(provider);
+  const image = await imageUrlToDataUrl(input.image);
+  const { buffer } = dataUrlToImageBuffer(image);
+  const metadata = await sharp(buffer).metadata();
+  const width = metadata.width ?? 0;
+  const height = metadata.height ?? 0;
+
+  if (width <= 0 || height <= 0) {
+    throw new Error("无法读取原图尺寸，请换一张图片重试。");
+  }
+
+  const prompt = buildImageEnhancePrompt(input);
+  const editSize = getClosestImageEditSize(width, height);
+  const errors: string[] = [];
+
+  for (const model of models) {
+    try {
+      const result = await adapter.editImage({
+        model,
+        image,
+        prompt,
+        size: editSize,
+        timeoutMs: 180000,
+        monitor: {
+          operation: "toolbox_image_enhance",
+        },
+      });
+      const resultBuffer = await imageResultToBuffer(result);
+      const finalized = await sharp(resultBuffer)
+        .resize(width, height, { fit: "fill" })
+        .png()
+        .toBuffer();
+      const saved = await saveToolboxPngBuffer(finalized, "enhance");
+      const updatedAt = new Date().toISOString();
+
+      return {
+        imageUrl: saved.url,
+        outputImagePath: saved.filePath,
+        prompt,
+        model,
+        revisedPrompt: result.revisedPrompt ?? "",
+        updatedAt,
+        metadata: {
+          revisedPrompt: result.revisedPrompt ?? "",
+          updatedAt,
+          sourceSize: { width, height },
+          outputSize: { width, height },
+          editSize,
+          enhancementMode: input.enhancementMode ?? "auto",
+          intensity: input.intensity ?? "balanced",
+        },
+      };
+    } catch (error) {
+      errors.push(`${model}: ${error instanceof Error ? error.message : "未知错误"}`);
+    }
+  }
+
+  throw new Error(
+    models.length === 0
+      ? "当前没有可用的图片编辑模型。"
+      : summarizeImageEnhanceFailure(new Error(errors.join(" | "))),
+  );
+}
+
+function normalizeUpscaleScale(value: ToolboxUpscaleInput["scale"]) {
+  return value === 4 ? 4 : 2;
+}
+
+function getUpscaleTargetSize(width: number, height: number, requestedScale: 2 | 4) {
+  const maxOutputSide = 4096;
+  const longestSide = Math.max(width, height);
+  const cappedScale = Math.min(requestedScale, maxOutputSide / Math.max(longestSide, 1));
+  const actualScale = Math.max(1, cappedScale);
+
+  return {
+    width: Math.max(1, Math.round(width * actualScale)),
+    height: Math.max(1, Math.round(height * actualScale)),
+    actualScale,
+    cappedByMaxSide: actualScale < requestedScale,
+    maxOutputSide,
+  };
+}
+
+async function runImageUpscaleModel(input: ToolboxUpscaleInput): Promise<ToolboxGenerationResult & {
+  outputImagePath: string;
+  prompt: string;
+  metadata: Record<string, unknown>;
+}> {
+  const { provider, adapter } = await getProviderAdapter();
+  const models = getImageEditModels(provider);
+  const image = await imageUrlToDataUrl(input.image);
+  const { buffer } = dataUrlToImageBuffer(image);
+  const metadata = await sharp(buffer).metadata();
+  const width = metadata.width ?? 0;
+  const height = metadata.height ?? 0;
+
+  if (width <= 0 || height <= 0) {
+    throw new Error("无法读取原图尺寸，请换一张图片重试。");
+  }
+
+  const requestedScale = normalizeUpscaleScale(input.scale);
+  const target = getUpscaleTargetSize(width, height, requestedScale);
+  const prompt = buildUpscalePrompt({ ...input, scale: requestedScale }, target);
+  const editSize = getClosestImageEditSize(width, height);
+  const errors: string[] = [];
+
+  for (const model of models) {
+    try {
+      const result = await adapter.editImage({
+        model,
+        image,
+        prompt,
+        size: editSize,
+        timeoutMs: 180000,
+        monitor: {
+          operation: "toolbox_image_upscale",
+        },
+      });
+      const resultBuffer = await imageResultToBuffer(result);
+      const finalized = await sharp(resultBuffer)
+        .resize(target.width, target.height, { fit: "fill", kernel: "lanczos3" })
+        .png()
+        .toBuffer();
+      const saved = await saveToolboxPngBuffer(finalized, "upscale");
+      const updatedAt = new Date().toISOString();
+
+      return {
+        imageUrl: saved.url,
+        outputImagePath: saved.filePath,
+        prompt,
+        model,
+        revisedPrompt: result.revisedPrompt ?? "",
+        updatedAt,
+        metadata: {
+          revisedPrompt: result.revisedPrompt ?? "",
+          updatedAt,
+          sourceSize: { width, height },
+          outputSize: { width: target.width, height: target.height },
+          requestedScale,
+          actualScale: target.actualScale,
+          cappedByMaxSide: target.cappedByMaxSide,
+          maxOutputSide: target.maxOutputSide,
+          editSize,
+          detailMode: input.detailMode ?? "standard",
+        },
+      };
+    } catch (error) {
+      errors.push(`${model}: ${error instanceof Error ? error.message : "未知错误"}`);
+    }
+  }
+
+  throw new Error(
+    models.length === 0
+      ? "当前没有可用的图片编辑模型。"
+      : summarizeUpscaleFailure(new Error(errors.join(" | "))),
   );
 }
 
@@ -844,6 +1056,57 @@ function buildImageTranslatePrompt(input: ToolboxImageTranslateInput) {
       : "",
     "Remove the original-language text after replacing it. Do not leave bilingual duplicates unless the source image intentionally uses bilingual branding.",
     "Return one finished translated image with the same aspect ratio as the original. Do not add any text outside the original artwork.",
+  ].filter(Boolean).join("\n");
+}
+
+function buildImageEnhancePrompt(input: ToolboxImageEnhanceInput) {
+  const modeLabels: Record<NonNullable<ToolboxImageEnhanceInput["enhancementMode"]>, string> = {
+    auto: "automatically balance clarity, lighting, color and detail",
+    clarity: "prioritize deblurring, sharpness, edge definition and fine texture clarity",
+    color: "prioritize color correction, exposure, contrast, white balance and tonal richness",
+    product: "prioritize product material detail, readable packaging, clean commercial finish and realistic reflections",
+    portrait: "prioritize natural skin tone, facial clarity and realistic portrait retouching",
+  };
+  const intensityLabels: Record<NonNullable<ToolboxImageEnhanceInput["intensity"]>, string> = {
+    natural: "natural and subtle",
+    balanced: "balanced and commercially polished",
+    strong: "strong but still realistic",
+  };
+  const mode = input.enhancementMode ?? "auto";
+  const intensity = input.intensity ?? "balanced";
+
+  return [
+    "You are performing professional image enhancement on the uploaded image.",
+    "Keep the same subject identity, composition, crop, camera angle, aspect ratio, layout, background structure, product shape, logo/text placement and all important visual facts.",
+    `Enhancement direction: ${modeLabels[mode]}.`,
+    `Enhancement intensity: ${intensityLabels[intensity]}.`,
+    "Improve perceived resolution, reduce noise and compression artifacts, refine edges and textures, recover mild blur, improve local contrast, and make the image look cleaner and more premium.",
+    "Do not invent new objects, change the product design, rewrite text, alter claims, add badges, change colors beyond natural correction, crop, zoom, rotate, mirror, outpaint, or redesign the scene.",
+    input.prompt?.trim() ? `Additional user guidance: ${input.prompt.trim()}` : "",
+    "Return one enhanced image with the same visible content as the original.",
+  ].filter(Boolean).join("\n");
+}
+
+function buildUpscalePrompt(
+  input: ToolboxUpscaleInput & { scale: 2 | 4 },
+  target: ReturnType<typeof getUpscaleTargetSize>,
+) {
+  const detailLabels: Record<NonNullable<ToolboxUpscaleInput["detailMode"]>, string> = {
+    standard: "general photographic detail restoration",
+    product: "commercial product detail restoration, accurate materials, packaging edges and readable brand artwork",
+    text: "text and graphic legibility restoration while preserving exact wording and layout",
+  };
+  const detailMode = input.detailMode ?? "standard";
+
+  return [
+    "You are performing high-quality image upscaling and restoration.",
+    `Requested upscale: ${input.scale}x. Target output after post-processing: ${target.width}x${target.height}px.`,
+    `Detail mode: ${detailLabels[detailMode]}.`,
+    "Preserve the exact subject identity, product shape, colors, logos, visible text meaning, composition, crop, aspect ratio, camera angle, background, layout and lighting direction.",
+    "Reconstruct plausible high-frequency details from the source: cleaner edges, fewer JPEG artifacts, lower noise, clearer texture, sharper product boundaries and improved small detail definition.",
+    "Do not redesign the image, add new objects, change text content, hallucinate branding, crop, zoom, rotate, mirror, outpaint, or change the scene.",
+    input.prompt?.trim() ? `Additional user guidance: ${input.prompt.trim()}` : "",
+    "Return one clean restored image suitable for enlargement.",
   ].filter(Boolean).join("\n");
 }
 
@@ -1478,6 +1741,220 @@ export async function createToolboxProductSceneTask(input: ToolboxProductSceneIn
     references: { sceneImageCount: input.sceneImages?.length ?? 0 } satisfies Prisma.InputJsonValue,
   });
   runTaskInBackground(() => runWithProviderCredentials(credentials, () => runToolboxProductSceneTask(task.id, input)));
+  return getTask(task.id);
+}
+
+export async function runToolboxImageEnhance(input: ToolboxImageEnhanceInput) {
+  if (!input.image) {
+    throw new Error("请先上传一张需要增强的图片。");
+  }
+
+  const result = await runImageEnhanceModel(input);
+  const record = await createToolboxRecord({
+    toolType: "ENHANCE",
+    sourceImage: input.image,
+    prompt: result.prompt,
+    model: result.model,
+    status: "SUCCESS",
+    outputImagePath: result.outputImagePath,
+    references: {
+      enhancementMode: input.enhancementMode ?? "auto",
+      intensity: input.intensity ?? "balanced",
+    } satisfies Prisma.InputJsonValue,
+    metadata: result.metadata,
+  });
+
+  return {
+    imageUrl: result.imageUrl,
+    recordId: record.id,
+    model: result.model,
+    revisedPrompt: result.revisedPrompt,
+    updatedAt: result.updatedAt,
+  };
+}
+
+async function runToolboxImageEnhanceTask(taskId: string, input: ToolboxImageEnhanceInput) {
+  const record = await findToolboxRecordByTaskId(taskId, "ENHANCE");
+
+  try {
+    await startTask(taskId, { currentStep: "running" });
+    if (record) await updateToolboxRecord(record.id, { status: "RUNNING" });
+
+    const result = await runImageEnhanceModel(input);
+    if (record) {
+      await updateToolboxRecord(record.id, {
+        status: "SUCCESS",
+        outputImagePath: result.outputImagePath,
+        prompt: result.prompt,
+        model: result.model,
+        metadata: result.metadata,
+      });
+    }
+
+    await completeTask(taskId, {
+      mode: "toolbox_image_enhance",
+      currentStep: "completed",
+      imageUrl: result.imageUrl,
+      recordId: record?.id ?? null,
+      model: result.model,
+      revisedPrompt: result.revisedPrompt ?? "",
+      updatedAt: result.updatedAt,
+    });
+  } catch (error) {
+    if (record) {
+      await updateToolboxRecord(record.id, {
+        status: "FAILED",
+        metadata: { errorMessage: error instanceof Error ? error.message : "图片增强失败" },
+      });
+    }
+    await failTask(taskId, error instanceof Error ? error.message : "图片增强失败");
+  }
+}
+
+export async function createToolboxImageEnhanceTask(
+  input: ToolboxImageEnhanceInput,
+  credentials: RequestProviderCredentials,
+) {
+  if (!input.image) {
+    throw new Error("请先上传一张需要增强的图片。");
+  }
+
+  const systemProject = await ensureSystemTaskProject();
+  const task = await createTask({
+    projectId: systemProject.id,
+    taskType: resolveTaskType("TOOLBOX_ENHANCE", "REGENERATE"),
+    status: "PENDING",
+    inputPayload: {
+      mode: "toolbox_image_enhance",
+      hasImage: Boolean(input.image),
+      prompt: input.prompt ?? "",
+      enhancementMode: input.enhancementMode ?? "auto",
+      intensity: input.intensity ?? "balanced",
+    },
+    outputPayload: {
+      mode: "toolbox_image_enhance",
+      currentStep: "queued",
+    },
+  });
+  await createToolboxRecord({
+    toolType: "ENHANCE",
+    sourceImage: input.image,
+    status: "PENDING",
+    taskId: task.id,
+    prompt: buildImageEnhancePrompt(input),
+    references: {
+      enhancementMode: input.enhancementMode ?? "auto",
+      intensity: input.intensity ?? "balanced",
+    } satisfies Prisma.InputJsonValue,
+  });
+  runTaskInBackground(() => runWithProviderCredentials(credentials, () => runToolboxImageEnhanceTask(task.id, input)));
+  return getTask(task.id);
+}
+
+export async function runToolboxUpscale(input: ToolboxUpscaleInput) {
+  if (!input.image) {
+    throw new Error("请先上传一张需要高清放大的图片。");
+  }
+
+  const scale = normalizeUpscaleScale(input.scale);
+  const result = await runImageUpscaleModel({ ...input, scale });
+  const record = await createToolboxRecord({
+    toolType: "UPSCALE",
+    sourceImage: input.image,
+    prompt: result.prompt,
+    model: result.model,
+    status: "SUCCESS",
+    outputImagePath: result.outputImagePath,
+    references: {
+      scale,
+      detailMode: input.detailMode ?? "standard",
+    } satisfies Prisma.InputJsonValue,
+    metadata: result.metadata,
+  });
+
+  return {
+    imageUrl: result.imageUrl,
+    recordId: record.id,
+    model: result.model,
+    revisedPrompt: result.revisedPrompt,
+    updatedAt: result.updatedAt,
+  };
+}
+
+async function runToolboxUpscaleTask(taskId: string, input: ToolboxUpscaleInput) {
+  const record = await findToolboxRecordByTaskId(taskId, "UPSCALE");
+  const scale = normalizeUpscaleScale(input.scale);
+
+  try {
+    await startTask(taskId, { currentStep: "running" });
+    if (record) await updateToolboxRecord(record.id, { status: "RUNNING" });
+
+    const result = await runImageUpscaleModel({ ...input, scale });
+    if (record) {
+      await updateToolboxRecord(record.id, {
+        status: "SUCCESS",
+        outputImagePath: result.outputImagePath,
+        prompt: result.prompt,
+        model: result.model,
+        metadata: result.metadata,
+      });
+    }
+
+    await completeTask(taskId, {
+      mode: "toolbox_image_upscale",
+      currentStep: "completed",
+      imageUrl: result.imageUrl,
+      recordId: record?.id ?? null,
+      model: result.model,
+      revisedPrompt: result.revisedPrompt ?? "",
+      updatedAt: result.updatedAt,
+    });
+  } catch (error) {
+    if (record) {
+      await updateToolboxRecord(record.id, {
+        status: "FAILED",
+        metadata: { errorMessage: error instanceof Error ? error.message : "高清放大失败" },
+      });
+    }
+    await failTask(taskId, error instanceof Error ? error.message : "高清放大失败");
+  }
+}
+
+export async function createToolboxUpscaleTask(input: ToolboxUpscaleInput, credentials: RequestProviderCredentials) {
+  if (!input.image) {
+    throw new Error("请先上传一张需要高清放大的图片。");
+  }
+
+  const scale = normalizeUpscaleScale(input.scale);
+  const systemProject = await ensureSystemTaskProject();
+  const task = await createTask({
+    projectId: systemProject.id,
+    taskType: resolveTaskType("TOOLBOX_UPSCALE", "REGENERATE"),
+    status: "PENDING",
+    inputPayload: {
+      mode: "toolbox_image_upscale",
+      hasImage: Boolean(input.image),
+      prompt: input.prompt ?? "",
+      scale,
+      detailMode: input.detailMode ?? "standard",
+    },
+    outputPayload: {
+      mode: "toolbox_image_upscale",
+      currentStep: "queued",
+    },
+  });
+  await createToolboxRecord({
+    toolType: "UPSCALE",
+    sourceImage: input.image,
+    status: "PENDING",
+    taskId: task.id,
+    prompt: input.prompt?.trim() ? input.prompt.trim() : `高清放大 ${scale}x`,
+    references: {
+      scale,
+      detailMode: input.detailMode ?? "standard",
+    } satisfies Prisma.InputJsonValue,
+  });
+  runTaskInBackground(() => runWithProviderCredentials(credentials, () => runToolboxUpscaleTask(task.id, { ...input, scale })));
   return getTask(task.id);
 }
 
