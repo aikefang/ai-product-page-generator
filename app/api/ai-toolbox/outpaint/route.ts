@@ -17,6 +17,7 @@ const requestSchema = z.object({
   executionMode: z.enum(["sync", "background"]).optional().default("sync"),
   image: z.string().min(1),
   prompt: z.string().trim().max(1200).optional().default(""),
+  useMask: z.boolean().optional().default(false),
   expand: z.object({
     top: z.number().min(0).max(100),
     right: z.number().min(0).max(100),

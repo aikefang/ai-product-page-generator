@@ -21,7 +21,7 @@ import {
 
 const systemProjectPlatform = "__turing_system_task__";
 const outpaintMaxCanvasSide = 2048;
-const FEATHER_RADIUS = 24;
+const FEATHER_RADIUS = 0;
 
 function resolveTaskType(preferred: string, fallback: string) {
   const inlineSchema = (prisma as typeof prisma & { _engineConfig?: { inlineSchema?: string } })._engineConfig?.inlineSchema;
@@ -59,6 +59,7 @@ export type ToolboxGenerationResult = ToolboxLocalRepaintResult;
 export type ToolboxOutpaintInput = {
   image: string;
   prompt?: string;
+  useMask?: boolean;
   expand: {
     top: number;
     right: number;
@@ -100,7 +101,6 @@ const edgeAnalysisSchema = z.object({
   bottom: z.string().optional().nullable().describe("What objects, colors, textures, structures are cut off at the bottom edge"),
   left: z.string().optional().nullable().describe("What objects, colors, textures, structures are cut off at the left edge"),
   overallScene: z.string().describe("Brief description of the overall scene, subject, and lighting"),
-  humanGuidance: z.string().optional().nullable().describe("If human body parts are visible, describe which parts and how they should naturally extend"),
 });
 type EdgeAnalysis = z.infer<typeof edgeAnalysisSchema>;
 
@@ -390,14 +390,14 @@ async function createFeatherMask(width: number, height: number, featherRadius: n
 async function finalizeOutpaintResult(
   result: ImageGenerationResult,
   assets: Awaited<ReturnType<typeof prepareOutpaintEditAssets>>,
+  useMask: boolean,
   featherRadius: number = FEATHER_RADIUS,
 ) {
   const resultBuffer = await imageResultToBuffer(result);
   const resolved = sharp(resultBuffer).resize(assets.target.width, assets.target.height, { fit: "fill" });
 
-  if (featherRadius <= 0) {
+  if (!useMask || featherRadius <= 0) {
     return resolved
-      .composite([{ input: assets.sourcePng, left: assets.offset.left, top: assets.offset.top }])
       .png()
       .toBuffer();
   }
@@ -549,7 +549,6 @@ async function analyzeOutpaintEdges(
       "3. What textures and patterns (floor, wall, fabric, sky, water, etc.) are at each edge? How should they repeat/extend?",
       "4. Are there perspective guides, horizon lines, shadows, or reflections at the edges? Describe their direction and intensity.",
       "5. overallScene: Describe the overall scene, subject, and lighting conditions briefly.",
-      "6. humanGuidance: If human body parts (hands, arms, legs, head, body) are visible, describe exactly which parts are present, their pose, and how they should naturally extend beyond the edges. Emphasize anatomical correctness.",
       "",
       "Only describe edges that are being expanded. Skip edges with no expansion.",
       "Be specific and actionable — the description will be passed directly to an image generation model.",
@@ -582,6 +581,7 @@ async function runOutpaintEditModel(input: ToolboxOutpaintInput): Promise<Toolbo
   const assets = await prepareOutpaintEditAssets(input);
   const edgeAnalysis = await analyzeOutpaintEdges(assets.sourcePng, assets.expand);
   const prompt = buildOutpaintPrompt(input, edgeAnalysis);
+  const useMask = input.useMask !== false;
   const errors: string[] = [];
 
   for (const model of models) {
@@ -589,7 +589,7 @@ async function runOutpaintEditModel(input: ToolboxOutpaintInput): Promise<Toolbo
       const result = await adapter.editImage({
         model,
         image: bufferToPngDataUrl(assets.canvas),
-        mask: bufferToPngDataUrl(assets.mask),
+        ...(useMask ? { mask: bufferToPngDataUrl(assets.mask) } : {}),
         prompt,
         size: assets.editSize,
         timeoutMs: 180000,
@@ -597,7 +597,7 @@ async function runOutpaintEditModel(input: ToolboxOutpaintInput): Promise<Toolbo
           operation: "toolbox_outpaint",
         },
       });
-      const finalized = await finalizeOutpaintResult(result, assets);
+      const finalized = await finalizeOutpaintResult(result, assets, useMask);
       const saved = await saveToolboxPngBuffer(finalized, "outpaint");
       const updatedAt = new Date().toISOString();
 
@@ -612,7 +612,8 @@ async function runOutpaintEditModel(input: ToolboxOutpaintInput): Promise<Toolbo
           revisedPrompt: result.revisedPrompt ?? "",
           updatedAt,
           realOutpaint: true,
-          protectedOriginalPixels: true,
+          protectedOriginalPixels: useMask,
+          useMask,
           editSize: assets.editSize,
           sourceSize: assets.source,
           outputSize: assets.target,
@@ -646,10 +647,23 @@ function buildOutpaintPrompt(input: ToolboxOutpaintInput, edgeAnalysis?: EdgeAna
     "You are an expert outpainting assistant. Your task is to intelligently expand this image outward.",
     "",
     "=== SETUP ===",
-    "The uploaded image contains the original image centered on a larger transparent canvas. A binary mask defines which areas need filling (transparent = paint here, opaque = keep as-is).",
     `Expansion requested: top ${expand.top}%, right ${expand.right}%, bottom ${expand.bottom}%, left ${expand.left}% relative to the original.`,
     "",
   ];
+
+  if (input.useMask === false) {
+    parts.push(
+      "The uploaded image contains the original image centered on a larger transparent canvas.",
+      "This run does not use a protected mask. Treat the full canvas as one coherent composition and expand it naturally.",
+      "",
+    );
+  } else {
+    parts.push(
+      "The uploaded image contains the original image centered on a larger transparent canvas.",
+      "A binary mask defines which areas need filling (transparent = paint here, opaque = keep as-is).",
+      "",
+    );
+  }
 
   if (edgeAnalysis?.overallScene) {
     parts.push(
@@ -658,24 +672,25 @@ function buildOutpaintPrompt(input: ToolboxOutpaintInput, edgeAnalysis?: EdgeAna
     );
   }
 
-  if (edgeAnalysis?.humanGuidance) {
+  parts.push(
+    "=== HUMAN ANATOMY CAUTION ===",
+    "If a human body part is visibly cut off at an expanding edge, continue only that cut-off part naturally.",
+    "Do not invent extra hands, fingers, arms, legs, tools, or body parts that are not already implied by the edge content.",
+  );
+
+  if (input.useMask === false) {
     parts.push(
-      "=== HUMAN ANATOMY GUIDANCE ===",
-      "This image contains human body parts. Follow these rules strictly:",
-      `${edgeAnalysis.humanGuidance}`,
-      "- Every finger must have exactly 3 joints and end with a clean, natural fingertip. Do not merge, twist, stretch, or multiply fingers.",
-      "- Count the fingers at each hand edge and generate exactly the same count continuing naturally.",
-      "- Hands must maintain natural human proportions, curvature, and skin tone matching the original.",
-      "- Never generate extra fingers, fused fingers, impossible poses, or distorted hand shapes.",
-      "- If an arm/hand is partially visible, continue the pose organically — do not break wrist joints or snap rotations.",
+      "=== NO-MASK MODE ===",
+      "Run this as a plain image edit without a protected mask.",
+      "Expand the canvas naturally and preserve the main subject identity, but do not try to rigidly freeze the center pixels.",
+      "Prefer smooth scene continuation over pixel-perfect protection.",
     );
   } else {
     parts.push(
-      "=== HUMAN ANATOMY CAUTION ===",
-      "If any human body parts (hands, arms, feet, face) are visible in the original image, pay extreme attention:",
-      "- Fingers must each have 3 joints, natural curvature, and correct count — never fuse, twist, duplicate, or deform fingers.",
-      "- Hands must maintain proper human proportions and anatomical structure.",
-      "- Continue any visible limbs with natural pose continuation — no joint snapping or impossible angles.",
+      "=== MASKED MODE ===",
+      "The original center is protected by a mask.",
+      "Only extend the newly added outer areas; avoid changing the protected center.",
+      "If a hand, wrist, or arm is fully inside the original protected image area, keep it unchanged and do not extend it into the new canvas.",
     );
   }
 
