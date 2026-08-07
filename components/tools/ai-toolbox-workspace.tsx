@@ -23,6 +23,7 @@ import {
   type LocalRepaintRunMode,
 } from "@/components/editor/local-repaint-drawer";
 import {
+  ImageTranslateDrawer,
   ImageToImageDrawer,
   ProductSceneDrawer,
   SmartOutpaintDrawer,
@@ -166,6 +167,7 @@ export function AiToolboxWorkspace() {
   const [outpaintOpen, setOutpaintOpen] = useState(false);
   const [imageToImageOpen, setImageToImageOpen] = useState(false);
   const [productSceneOpen, setProductSceneOpen] = useState(false);
+  const [imageTranslateOpen, setImageTranslateOpen] = useState(false);
   const [recordsOpen, setRecordsOpen] = useState(false);
   const [recordFilterToolType, setRecordFilterToolType] = useState<string | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
@@ -174,6 +176,7 @@ export function AiToolboxWorkspace() {
   const [outpaintInitialImage, setOutpaintInitialImage] = useState<{ url: string; title?: string } | null>(null);
   const [imageToImageInitialReferences, setImageToImageInitialReferences] = useState<Array<{ url: string; title?: string }>>([]);
   const [productSceneInitialImage, setProductSceneInitialImage] = useState<{ url: string; title?: string } | null>(null);
+  const [imageTranslateInitialImage, setImageTranslateInitialImage] = useState<{ url: string; title?: string } | null>(null);
   const [standaloneBaseImage, setStandaloneBaseImage] = useState<{
     title: string;
     imageUrl: string;
@@ -318,6 +321,13 @@ export function AiToolboxWorkspace() {
       return;
     }
 
+    if (record.toolType === "IMAGE_TRANSLATE") {
+      setImageTranslateInitialImage({ title, url: imageUrl });
+      setImageTranslateOpen(true);
+      toast.success("已带入图片，可以继续翻译");
+      return;
+    }
+
     toast.message(`${toolboxToolTypeLabels[record.toolType] ?? "该工具"} 即将开放，暂不支持继续处理。`);
   };
 
@@ -380,6 +390,11 @@ export function AiToolboxWorkspace() {
     if (name === "商品换场景") {
       setProductSceneInitialImage(null);
       setProductSceneOpen(true);
+      return;
+    }
+    if (name === "图片翻译") {
+      setImageTranslateInitialImage(null);
+      setImageTranslateOpen(true);
       return;
     }
 
@@ -700,7 +715,7 @@ export function AiToolboxWorkspace() {
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {tools.map((tool) => {
           const Icon = tool.icon;
-          const enabled = ["局部重绘", "智能扩图", "以图生图", "商品换场景"].includes(tool.title);
+          const enabled = ["局部重绘", "智能扩图", "以图生图", "商品换场景", "图片翻译"].includes(tool.title);
           return (
             <Card
               key={tool.title}
@@ -823,6 +838,17 @@ export function AiToolboxWorkspace() {
           setProductSceneOpen(nextOpen);
         }}
         initialProductImage={productSceneInitialImage}
+        initialSeed={continueImageSeed}
+      />
+      <ImageTranslateDrawer
+        open={imageTranslateOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setImageTranslateInitialImage(null);
+          }
+          setImageTranslateOpen(nextOpen);
+        }}
+        initialImage={imageTranslateInitialImage}
         initialSeed={continueImageSeed}
       />
       <DrawerDialog

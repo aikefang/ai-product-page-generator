@@ -11,6 +11,11 @@ import { useImagePreview } from "@/components/shared/image-preview-provider";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
+import {
+  contentLanguageOptions,
+  normalizeContentLanguage,
+  type ContentLanguage,
+} from "@/lib/utils/content-language";
 
 type RunMode = "sync" | "background";
 
@@ -49,6 +54,19 @@ type ExpandEdges = {
 type InitialToolboxImage = {
   url: string;
   title?: string;
+};
+
+const imageTranslateLanguageLabels: Record<ContentLanguage, string> = {
+  "zh-CN": "简体中文（中文）",
+  "en-US": "英语（English）",
+  "ja-JP": "日语（日本語）",
+  "ko-KR": "韩语（한국어）",
+  "es-ES": "西班牙语（Español）",
+  "fr-FR": "法语（Français）",
+  "de-DE": "德语（Deutsch）",
+  "pt-PT": "葡萄牙语（Português）",
+  "ar-SA": "阿拉伯语（العربية）",
+  "ru-RU": "俄语（Русский）",
 };
 
 async function fileToDataUrl(file: File) {
@@ -925,6 +943,182 @@ export function ProductSceneDrawer({
           <div className="space-y-2">
             <Label className="text-xs text-muted-foreground">场景描述（非必填）</Label>
             <Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：把产品放在现代咖啡馆木质台面上，背景有柔和灯光和浅景深。" className="min-h-[180px]" />
+          </div>
+          <VersionPanel versions={runner.versions} onActivate={runner.activateVersion} />
+        </div>
+      </div>
+    </DrawerDialog>
+  );
+}
+
+export function ImageTranslateDrawer({
+  open,
+  onOpenChange,
+  initialImage,
+  initialSeed,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initialImage?: InitialToolboxImage | null;
+  initialSeed?: number;
+}) {
+  const [sourceFiles, setSourceFiles] = useState<File[]>([]);
+  const [imageUrl, setImageUrl] = useState("");
+  const [targetLanguage, setTargetLanguage] = useState<ContentLanguage>("en-US");
+  const fileReadSeqRef = useRef(0);
+  const runner = useToolboxRunner({
+    endpoint: "/api/ai-toolbox/image-translate",
+    resultTitlePrefix: "图片翻译",
+    onResultImage: setImageUrl,
+  });
+
+  const resetState = useCallback(() => {
+    fileReadSeqRef.current += 1;
+    setSourceFiles([]);
+    setImageUrl("");
+    setTargetLanguage("en-US");
+    runner.reset();
+  }, [runner.reset]);
+
+  const handleSourceFilesChange = useCallback((nextFiles: File[]) => {
+    setSourceFiles(nextFiles);
+    fileReadSeqRef.current += 1;
+    const readSeq = fileReadSeqRef.current;
+    const file = nextFiles[0];
+
+    if (!file) {
+      setImageUrl("");
+      runner.reset();
+      return;
+    }
+
+    void fileToDataUrl(file)
+      .then((url) => {
+        if (fileReadSeqRef.current !== readSeq) return;
+        setImageUrl(url);
+        runner.setOriginalVersion({
+          url,
+          title: file.name || "原始图片",
+        });
+      })
+      .catch(() => {
+        if (fileReadSeqRef.current !== readSeq) return;
+        setImageUrl("");
+        runner.reset();
+        toast.error("图片读取失败，请重新选择图片。");
+      });
+  }, [runner.reset, runner.setOriginalVersion]);
+
+  useEffect(() => {
+    if (!open || initialImage?.url) return;
+    resetState();
+  }, [initialImage?.url, open, resetState]);
+
+  useEffect(() => {
+    if (!open || !initialImage?.url) return;
+    let disposed = false;
+    setTargetLanguage("en-US");
+    runner.reset();
+    setImageUrl(initialImage.url);
+    runner.setOriginalVersion(initialImage);
+    fileReadSeqRef.current += 1;
+    void imageUrlToFile(initialImage, "image-translate-source")
+      .then((file) => {
+        if (!disposed) {
+          setSourceFiles([file]);
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setSourceFiles([]);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [initialImage, initialSeed, open, runner.reset, runner.setOriginalVersion]);
+
+  const submit = async (mode: RunMode) => {
+    if (!imageUrl) {
+      toast.error("请先上传一张需要翻译的图片。");
+      return;
+    }
+    await runner.run(mode, { image: imageUrl, targetLanguage });
+  };
+
+  return (
+    <DrawerDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          resetState();
+        }
+        onOpenChange(nextOpen);
+      }}
+      title="图片翻译"
+      width={1100}
+      closeOnOverlayClick={false}
+      footer={
+        <DrawerFooter
+          syncLabel="立即翻译"
+          backgroundLabel="后台翻译"
+          runningMode={runner.runningMode}
+          backgroundRunning={runner.backgroundRunning}
+          disabled={!imageUrl}
+          onClose={() => {
+            resetState();
+            onOpenChange(false);
+          }}
+          onRun={submit}
+        />
+      }
+    >
+      <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-h-0 overflow-auto rounded-2xl border border-border bg-muted/20 p-4">
+          {imageUrl ? (
+            <div className="flex min-h-[520px] items-center justify-center rounded-2xl border border-border bg-background p-3">
+              <img src={imageUrl} alt="图片翻译预览" className="max-h-[560px] max-w-full rounded-xl object-contain shadow-sm" />
+            </div>
+          ) : (
+            <ImageUploadDropzone
+              id="toolbox-image-translate-source"
+              files={sourceFiles}
+              onFilesChange={handleSourceFilesChange}
+              acceptPagePaste
+              title="上传需要翻译的图片"
+              description="支持点击选择、拖拽上传、复制图片文件后粘贴。"
+              minHeightClassName="min-h-[520px]"
+            />
+          )}
+        </div>
+        <div className="min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-card p-4">
+          {imageUrl ? (
+            <ImageUploadDropzone
+              id="toolbox-image-translate-replace"
+              files={sourceFiles}
+              onFilesChange={handleSourceFilesChange}
+              acceptPagePaste
+              title="更换图片"
+              description="重新上传后会以新图作为翻译原图。"
+              minHeightClassName="min-h-[160px]"
+            />
+          ) : null}
+          <div className="space-y-2">
+            <Label htmlFor="toolbox-image-translate-language" className="text-xs text-muted-foreground">
+              目标语言
+            </Label>
+            <select
+              id="toolbox-image-translate-language"
+              value={targetLanguage}
+              onChange={(event) => setTargetLanguage(normalizeContentLanguage(event.target.value))}
+              className="flex h-10 w-full rounded-xl border border-input bg-white px-3 text-sm shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-ring dark:bg-white/6 dark:text-slate-100"
+            >
+              {contentLanguageOptions.map((language) => (
+                <option key={language} value={language}>
+                  {imageTranslateLanguageLabels[language]}
+                </option>
+              ))}
+            </select>
           </div>
           <VersionPanel versions={runner.versions} onActivate={runner.activateVersion} />
         </div>

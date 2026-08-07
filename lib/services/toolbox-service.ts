@@ -18,6 +18,11 @@ import {
   saveToolboxGeneratedImage,
   saveToolboxInputImage,
 } from "@/lib/storage/asset-manager";
+import {
+  contentLanguageNamesForPrompt,
+  normalizeContentLanguage,
+  type ContentLanguage,
+} from "@/lib/utils/content-language";
 
 const systemProjectPlatform = "__turing_system_task__";
 const outpaintMaxCanvasSide = 2048;
@@ -77,6 +82,11 @@ export type ToolboxProductSceneInput = {
   productImage: string;
   prompt?: string;
   sceneImages?: string[];
+};
+
+export type ToolboxImageTranslateInput = {
+  image: string;
+  targetLanguage: ContentLanguage;
 };
 
 export type ToolboxLocalRepaintInstructionInput = {
@@ -169,6 +179,17 @@ function summarizeImageEditFailure(error: unknown) {
     return "当前 Provider 请求超时或网络异常，请稍后重试。";
   }
   return `当前 Provider 没有可用的真实局部重绘能力，或不支持 multipart mask 图片编辑。局部重绘不会使用普通重绘兜底，以避免改动未涂抹区域。原因摘要：${detail}`;
+}
+
+function summarizeImageTranslateFailure(error: unknown) {
+  const detail = error instanceof Error ? error.message : "Unknown image translate error";
+  if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
+    return "当前 API Key 的图片翻译额度已用尽。请前往代理商控制台提高或移除月度限额，或更换可用的 API Key。";
+  }
+  if (/timed out|aborterror|network error|fetch failed|gateway-timeout|gateway time-out|504/i.test(detail)) {
+    return "当前 Provider 请求超时或网络异常，请稍后重试。";
+  }
+  return `当前 Provider 没有可用的图片编辑能力，或不支持基于原图进行图片翻译。请在 Provider 设置中选择支持图片编辑的模型。原因摘要：${detail}`;
 }
 
 async function saveToolboxResult(result: ImageGenerationResult) {
@@ -415,7 +436,7 @@ async function finalizeOutpaintResult(
 }
 
 async function createToolboxRecord(input: {
-  toolType: "OUTPAINT" | "IMAGE_TO_IMAGE" | "PRODUCT_SCENE";
+  toolType: "OUTPAINT" | "IMAGE_TO_IMAGE" | "PRODUCT_SCENE" | "IMAGE_TRANSLATE";
   sourceImage?: string | null;
   prompt?: string | null;
   model?: string | null;
@@ -445,7 +466,7 @@ async function createToolboxRecord(input: {
 
 async function findToolboxRecordByTaskId(
   taskId: string,
-  toolType: "OUTPAINT" | "IMAGE_TO_IMAGE" | "PRODUCT_SCENE",
+  toolType: "OUTPAINT" | "IMAGE_TO_IMAGE" | "PRODUCT_SCENE" | "IMAGE_TRANSLATE",
 ) {
   return toolboxRecordClient().findFirst({
     where: { taskId, toolType },
@@ -512,6 +533,48 @@ async function runImageGenerationModel(input: {
   }
 
   throw new Error(models.length === 0 ? "当前没有可用的图片生成模型。" : `所有可用图片模型都生成失败：${errors.join(" | ")}`);
+}
+
+async function runImageTranslateModel(input: ToolboxImageTranslateInput): Promise<ToolboxGenerationResult & {
+  outputImagePath: string;
+  prompt: string;
+}> {
+  const { provider, adapter } = await getProviderAdapter();
+  const models = getImageEditModels(provider);
+  const image = await imageUrlToDataUrl(input.image);
+  const prompt = buildImageTranslatePrompt(input);
+  const errors: string[] = [];
+
+  for (const model of models) {
+    try {
+      const result = await adapter.editImage({
+        model,
+        image,
+        prompt,
+        timeoutMs: 180000,
+        monitor: {
+          operation: "toolbox_image_translate",
+        },
+      });
+      const saved = await saveToolboxResult(result);
+      return {
+        imageUrl: saved.url,
+        outputImagePath: saved.filePath,
+        prompt,
+        model,
+        revisedPrompt: result.revisedPrompt ?? "",
+        updatedAt: new Date().toISOString(),
+      };
+    } catch (error) {
+      errors.push(`${model}: ${error instanceof Error ? error.message : "未知错误"}`);
+    }
+  }
+
+  throw new Error(
+    models.length === 0
+      ? "当前没有可用的图片编辑模型。"
+      : summarizeImageTranslateFailure(new Error(errors.join(" | "))),
+  );
 }
 
 async function analyzeOutpaintEdges(
@@ -759,6 +822,28 @@ function buildProductScenePrompt(input: ToolboxProductSceneInput) {
       ? `User scene instruction: ${input.prompt.trim()}`
       : "Create a clean, realistic, conversion-oriented scene that naturally presents the product.",
     "Keep the product realistic and prominent. The scene should support the product rather than overwhelm it.",
+  ].filter(Boolean).join("\n");
+}
+
+function buildImageTranslatePrompt(input: ToolboxImageTranslateInput) {
+  const targetLanguage = contentLanguageNamesForPrompt[normalizeContentLanguage(input.targetLanguage)];
+
+  return [
+    "You are performing a professional in-image localization task for a product image.",
+    "The uploaded image is the editable base image and the sole source of truth for the product and visual design.",
+    `Translate every visible user-facing text element into natural, native ${targetLanguage}. Include headlines, subheads, selling points, labels, badges, buttons, captions, price notes, legal notes, and promotional copy.`,
+    "Do not translate word-for-word when that would sound unnatural. Localize the meaning into fluent, commercially polished marketing language for native speakers of the target language.",
+    "Use the surrounding image, product category, and nearby copy to resolve ambiguous wording. Keep brand names, model names, product codes, trademarks, and established proper nouns unchanged when they should remain branded.",
+    "Preserve the product exactly. Do not alter the product itself, packaging, logo artwork, product shape, materials, colors, proportions, camera angle, crop, background scene, lighting, shadows, or key visual elements.",
+    "Keep the original aspect ratio and visible image boundaries. Do not crop, expand, zoom, rotate, mirror, reframe, or change the composition. You may increase output resolution when the source image is low-resolution or unclear.",
+    "Preserve the original composition, layout hierarchy, color palette, graphic style, and visual emphasis. Only adapt typography where the target language requires it.",
+    "Rebuild translated text so it fits the existing design naturally: choose appropriate line breaks, font scale, spacing, alignment, and text-box balance. Keep the original hierarchy and readability rather than forcing literal text into the old line breaks.",
+    "When low-resolution or damaged source details are unclear, reconstruct them conservatively in the same visual style. Improve legibility and finish quality without changing the product identity or introducing new visual claims.",
+    input.targetLanguage === "ar-SA"
+      ? "For Arabic, use correct right-to-left text flow inside translated text areas. Do not mirror the product, image composition, or non-text artwork."
+      : "",
+    "Remove the original-language text after replacing it. Do not leave bilingual duplicates unless the source image intentionally uses bilingual branding.",
+    "Return one finished translated image with the same aspect ratio as the original. Do not add any text outside the original artwork.",
   ].filter(Boolean).join("\n");
 }
 
@@ -1393,5 +1478,121 @@ export async function createToolboxProductSceneTask(input: ToolboxProductSceneIn
     references: { sceneImageCount: input.sceneImages?.length ?? 0 } satisfies Prisma.InputJsonValue,
   });
   runTaskInBackground(() => runWithProviderCredentials(credentials, () => runToolboxProductSceneTask(task.id, input)));
+  return getTask(task.id);
+}
+
+export async function runToolboxImageTranslate(input: ToolboxImageTranslateInput) {
+  if (!input.image) {
+    throw new Error("请先上传一张需要翻译的图片。");
+  }
+
+  const targetLanguage = normalizeContentLanguage(input.targetLanguage);
+  const result = await runImageTranslateModel({
+    image: input.image,
+    targetLanguage,
+  });
+  const record = await createToolboxRecord({
+    toolType: "IMAGE_TRANSLATE",
+    sourceImage: input.image,
+    prompt: result.prompt,
+    model: result.model,
+    status: "SUCCESS",
+    outputImagePath: result.outputImagePath,
+    references: { targetLanguage } satisfies Prisma.InputJsonValue,
+    metadata: {
+      revisedPrompt: result.revisedPrompt ?? "",
+      updatedAt: result.updatedAt,
+    },
+  });
+
+  return {
+    imageUrl: result.imageUrl,
+    recordId: record.id,
+    model: result.model,
+    revisedPrompt: result.revisedPrompt,
+    updatedAt: result.updatedAt,
+  };
+}
+
+async function runToolboxImageTranslateTask(taskId: string, input: ToolboxImageTranslateInput) {
+  const record = await findToolboxRecordByTaskId(taskId, "IMAGE_TRANSLATE");
+  const targetLanguage = normalizeContentLanguage(input.targetLanguage);
+
+  try {
+    await startTask(taskId, { currentStep: "running" });
+    if (record) await updateToolboxRecord(record.id, { status: "RUNNING" });
+
+    const result = await runImageTranslateModel({
+      image: input.image,
+      targetLanguage,
+    });
+    if (record) {
+      await updateToolboxRecord(record.id, {
+        status: "SUCCESS",
+        outputImagePath: result.outputImagePath,
+        prompt: result.prompt,
+        model: result.model,
+        metadata: {
+          revisedPrompt: result.revisedPrompt ?? "",
+          updatedAt: result.updatedAt,
+        },
+      });
+    }
+
+    await completeTask(taskId, {
+      mode: "toolbox_image_translate",
+      currentStep: "completed",
+      imageUrl: result.imageUrl,
+      recordId: record?.id ?? null,
+      model: result.model,
+      revisedPrompt: result.revisedPrompt ?? "",
+      updatedAt: result.updatedAt,
+    });
+  } catch (error) {
+    if (record) {
+      await updateToolboxRecord(record.id, {
+        status: "FAILED",
+        metadata: { errorMessage: error instanceof Error ? error.message : "图片翻译失败" },
+      });
+    }
+    await failTask(taskId, error instanceof Error ? error.message : "图片翻译失败");
+  }
+}
+
+export async function createToolboxImageTranslateTask(
+  input: ToolboxImageTranslateInput,
+  credentials: RequestProviderCredentials,
+) {
+  if (!input.image) {
+    throw new Error("请先上传一张需要翻译的图片。");
+  }
+
+  const targetLanguage = normalizeContentLanguage(input.targetLanguage);
+  const systemProject = await ensureSystemTaskProject();
+  const task = await createTask({
+    projectId: systemProject.id,
+    taskType: resolveTaskType("TOOLBOX_IMAGE_TRANSLATE", "REGENERATE"),
+    status: "PENDING",
+    inputPayload: {
+      mode: "toolbox_image_translate",
+      hasImage: Boolean(input.image),
+      targetLanguage,
+    },
+    outputPayload: {
+      mode: "toolbox_image_translate",
+      currentStep: "queued",
+    },
+  });
+  await createToolboxRecord({
+    toolType: "IMAGE_TRANSLATE",
+    sourceImage: input.image,
+    status: "PENDING",
+    taskId: task.id,
+    prompt: buildImageTranslatePrompt({ image: input.image, targetLanguage }),
+    references: { targetLanguage } satisfies Prisma.InputJsonValue,
+  });
+  runTaskInBackground(() =>
+    runWithProviderCredentials(credentials, () => runToolboxImageTranslateTask(task.id, { ...input, targetLanguage })),
+  );
   return getTask(task.id);
 }
