@@ -160,20 +160,23 @@ function useToolboxRunner({
   const [versions, setVersions] = useState<ToolboxVersion[]>([]);
 
   const applyResult = useCallback((result: ToolboxResult) => {
-    if (!result.imageUrl) return;
-    const generatedCount = versions.filter((v) => !v.isOriginal).length;
-    const nextNumber = generatedCount + 1;
-    const version: ToolboxVersion = {
-      id: result.recordId ?? `${Date.now()}-${nextNumber}`,
-      title: `${resultTitlePrefix} v${nextNumber}`,
-      imageUrl: result.imageUrl,
-      model: result.model,
-      createdAt: result.updatedAt ?? new Date().toISOString(),
-      isActive: true,
-    };
-    setVersions((current) => [version, ...current.map((item) => ({ ...item, isActive: false }))]);
-    onResultImage?.(result.imageUrl);
-  }, [onResultImage, resultTitlePrefix, versions]);
+    const imageUrl = result.imageUrl;
+    if (!imageUrl) return;
+    setVersions((current) => {
+      const generatedCount = current.filter((v) => !v.isOriginal).length;
+      const nextNumber = generatedCount + 1;
+      const version: ToolboxVersion = {
+        id: result.recordId ?? `${Date.now()}-${nextNumber}`,
+        title: `${resultTitlePrefix} v${nextNumber}`,
+        imageUrl,
+        model: result.model,
+        createdAt: result.updatedAt ?? new Date().toISOString(),
+        isActive: true,
+      };
+      return [version, ...current.map((item) => ({ ...item, isActive: false }))];
+    });
+    onResultImage?.(imageUrl);
+  }, [onResultImage, resultTitlePrefix]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -253,6 +256,19 @@ function useToolboxRunner({
     setVersions([]);
   }, []);
 
+  const setOriginalVersion = useCallback((image: InitialToolboxImage) => {
+    setVersions([
+      {
+        id: "original",
+        title: "原始图片",
+        imageUrl: image.url,
+        createdAt: null,
+        isActive: true,
+        isOriginal: true,
+      },
+    ]);
+  }, []);
+
   const deactivateAllVersions = useCallback(() => {
     setVersions((current) => current.map((item) => ({ ...item, isActive: false })));
   }, []);
@@ -263,6 +279,7 @@ function useToolboxRunner({
     versions,
     run,
     activateVersion,
+    setOriginalVersion,
     deactivateAllVersions,
     reset,
   };
@@ -410,6 +427,7 @@ export function SmartOutpaintDrawer({
   const [imageUrl, setImageUrl] = useState("");
   const [prompt, setPrompt] = useState("");
   const [expand, setExpand] = useState<ExpandEdges>({ top: 20, right: 20, bottom: 20, left: 20 });
+  const fileReadSeqRef = useRef(0);
   const runner = useToolboxRunner({
     endpoint: "/api/ai-toolbox/outpaint",
     resultTitlePrefix: "智能扩图",
@@ -417,12 +435,42 @@ export function SmartOutpaintDrawer({
   });
 
   const resetState = useCallback(() => {
+    fileReadSeqRef.current += 1;
     setFiles([]);
     setImageUrl("");
     setPrompt("");
     setExpand({ top: 20, right: 20, bottom: 20, left: 20 });
     runner.reset();
   }, [runner.reset]);
+
+  const handleFilesChange = useCallback((nextFiles: File[]) => {
+    setFiles(nextFiles);
+    fileReadSeqRef.current += 1;
+    const readSeq = fileReadSeqRef.current;
+    const file = nextFiles[0];
+
+    if (!file) {
+      setImageUrl("");
+      runner.reset();
+      return;
+    }
+
+    void fileToDataUrl(file)
+      .then((url) => {
+        if (fileReadSeqRef.current !== readSeq) return;
+        setImageUrl(url);
+        runner.setOriginalVersion({
+          url,
+          title: file.name || "原始图片",
+        });
+      })
+      .catch(() => {
+        if (fileReadSeqRef.current !== readSeq) return;
+        setImageUrl("");
+        runner.reset();
+        toast.error("图片读取失败，请重新选择图片。");
+      });
+  }, [runner.reset, runner.setOriginalVersion]);
 
   useEffect(() => {
     if (!open || initialImage?.url) return;
@@ -436,6 +484,8 @@ export function SmartOutpaintDrawer({
     setExpand({ top: 20, right: 20, bottom: 20, left: 20 });
     runner.reset();
     setImageUrl(initialImage.url);
+    runner.setOriginalVersion(initialImage);
+    fileReadSeqRef.current += 1;
     void imageUrlToFile(initialImage, "outpaint-source")
       .then((file) => {
         if (!disposed) {
@@ -450,23 +500,7 @@ export function SmartOutpaintDrawer({
     return () => {
       disposed = true;
     };
-  }, [initialImage?.url, initialSeed, open, runner.reset]);
-
-  useEffect(() => {
-    if (!files[0]) {
-      if (!initialImage?.url) {
-        setImageUrl("");
-      }
-      return;
-    }
-    let disposed = false;
-    void fileToDataUrl(files[0]).then((url) => {
-      if (!disposed) setImageUrl(url);
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [files, initialImage?.url]);
+  }, [initialImage, initialSeed, open, runner.reset, runner.setOriginalVersion]);
 
   const submit = async (mode: RunMode) => {
     if (!imageUrl) {
@@ -511,7 +545,7 @@ export function SmartOutpaintDrawer({
             <ImageUploadDropzone
               id="toolbox-outpaint-base"
               files={files}
-              onFilesChange={setFiles}
+              onFilesChange={handleFilesChange}
               acceptPagePaste
               title="上传需要扩图的原图"
               description="支持点击选择、拖拽上传、复制图片文件后粘贴。"
@@ -524,7 +558,7 @@ export function SmartOutpaintDrawer({
             <ImageUploadDropzone
               id="toolbox-outpaint-replace"
               files={files}
-              onFilesChange={setFiles}
+              onFilesChange={handleFilesChange}
               acceptPagePaste
               title="更换原图"
               description="重新上传后会以新图为扩图基础。"
@@ -535,34 +569,7 @@ export function SmartOutpaintDrawer({
             <Label className="text-xs text-muted-foreground">补充提示词（非必填）</Label>
             <Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：向右扩展出更多咖啡吧台空间，保持暖色灯光和真实质感。" className="min-h-[140px]" />
           </div>
-          <VersionPanel
-            versions={
-              initialImage?.url
-                ? [
-                    ...(runner.versions.some((v) => v.id === "original")
-                      ? []
-                      : [{
-                          id: "original",
-                          title: "原始图片",
-                          imageUrl: initialImage.url,
-                          createdAt: null,
-                          isActive: runner.versions.every((v) => !v.isActive),
-                          isOriginal: true,
-                        } as ToolboxVersion]),
-                    ...runner.versions,
-                  ]
-                : runner.versions
-            }
-            onActivate={(version) => {
-              if (version.isOriginal) {
-                runner.deactivateAllVersions();
-                setImageUrl(initialImage!.url);
-                toast.success("已恢复为原始图片");
-                return;
-              }
-              runner.activateVersion(version);
-            }}
-          />
+          <VersionPanel versions={runner.versions} onActivate={runner.activateVersion} />
         </div>
       </div>
     </DrawerDialog>
@@ -583,18 +590,64 @@ export function ImageToImageDrawer({
   const [referenceFiles, setReferenceFiles] = useState<File[]>([]);
   const [prompt, setPrompt] = useState("");
   const [latestImage, setLatestImage] = useState("");
+  const referenceFileReadSeqRef = useRef(0);
+
+  const updateCurrentReferenceImage = useCallback((url: string, title = "当前参考图") => {
+    setLatestImage(url);
+    referenceFileReadSeqRef.current += 1;
+    const readSeq = referenceFileReadSeqRef.current;
+    void imageUrlToFile({ url, title }, "image-to-image-current")
+      .then((file) => {
+        if (referenceFileReadSeqRef.current === readSeq) {
+          setReferenceFiles([file]);
+        }
+      })
+      .catch(() => {
+        // 当前版本仍可直接作为图片 URL 提交，预览文件转换失败时保留当前 URL。
+      });
+  }, []);
+
   const runner = useToolboxRunner({
     endpoint: "/api/ai-toolbox/image-to-image",
     resultTitlePrefix: "以图生图",
-    onResultImage: setLatestImage,
+    onResultImage: updateCurrentReferenceImage,
   });
 
   const resetState = useCallback(() => {
+    referenceFileReadSeqRef.current += 1;
     setReferenceFiles([]);
     setPrompt("");
     setLatestImage("");
     runner.reset();
   }, [runner.reset]);
+
+  const handleReferenceFilesChange = useCallback((nextFiles: File[]) => {
+    setReferenceFiles(nextFiles);
+    referenceFileReadSeqRef.current += 1;
+    const readSeq = referenceFileReadSeqRef.current;
+
+    if (nextFiles.length === 0) {
+      setLatestImage("");
+      runner.reset();
+      return;
+    }
+
+    void filesToDataUrls(nextFiles)
+      .then(([firstImageUrl]) => {
+        if (referenceFileReadSeqRef.current !== readSeq || !firstImageUrl) return;
+        setLatestImage("");
+        runner.setOriginalVersion({
+          url: firstImageUrl,
+          title: nextFiles[0]?.name || "原始图片",
+        });
+      })
+      .catch(() => {
+        if (referenceFileReadSeqRef.current !== readSeq) return;
+        setLatestImage("");
+        runner.reset();
+        toast.error("参考图读取失败，请重新选择图片。");
+      });
+  }, [runner.reset, runner.setOriginalVersion]);
 
   useEffect(() => {
     if (!open || initialReferenceImages.length > 0) return;
@@ -607,6 +660,8 @@ export function ImageToImageDrawer({
     setPrompt("");
     setLatestImage("");
     runner.reset();
+    referenceFileReadSeqRef.current += 1;
+    runner.setOriginalVersion(initialReferenceImages[0]);
     void Promise.all(initialReferenceImages.map((image, index) => imageUrlToFile(image, `image-to-image-reference-${index + 1}`)))
       .then((files) => {
         if (!disposed) {
@@ -619,7 +674,7 @@ export function ImageToImageDrawer({
     return () => {
       disposed = true;
     };
-  }, [initialReferenceImages, initialSeed, open, runner.reset]);
+  }, [initialReferenceImages, initialSeed, open, runner.reset, runner.setOriginalVersion]);
 
   const submit = async (mode: RunMode) => {
     const referenceImages = await filesToDataUrls(referenceFiles);
@@ -662,7 +717,7 @@ export function ImageToImageDrawer({
           <ImageUploadDropzone
             id="toolbox-image-to-image-references"
             files={referenceFiles}
-            onFilesChange={setReferenceFiles}
+            onFilesChange={handleReferenceFilesChange}
             acceptPagePaste
             multiple
             title="上传参考图"
@@ -705,19 +760,72 @@ export function ProductSceneDrawer({
   const [sceneFiles, setSceneFiles] = useState<File[]>([]);
   const [prompt, setPrompt] = useState("");
   const [latestImage, setLatestImage] = useState("");
+  const [productImageUrl, setProductImageUrl] = useState("");
+  const productFileReadSeqRef = useRef(0);
+
+  const updateCurrentProductImage = useCallback((url: string, title = "当前产品图") => {
+    setProductImageUrl(url);
+    setLatestImage(url);
+    productFileReadSeqRef.current += 1;
+    const readSeq = productFileReadSeqRef.current;
+    void imageUrlToFile({ url, title }, "product-scene-current")
+      .then((file) => {
+        if (productFileReadSeqRef.current === readSeq) {
+          setProductFiles([file]);
+        }
+      })
+      .catch(() => {
+        // 版本图片已经可以直接用于生成，预览文件转换失败时保留当前 URL。
+      });
+  }, []);
+
   const runner = useToolboxRunner({
     endpoint: "/api/ai-toolbox/product-scene",
     resultTitlePrefix: "商品换场景",
-    onResultImage: setLatestImage,
+    onResultImage: updateCurrentProductImage,
   });
 
   const resetState = useCallback(() => {
+    productFileReadSeqRef.current += 1;
     setProductFiles([]);
     setSceneFiles([]);
     setPrompt("");
     setLatestImage("");
+    setProductImageUrl("");
     runner.reset();
   }, [runner.reset]);
+
+  const handleProductFilesChange = useCallback((nextFiles: File[]) => {
+    setProductFiles(nextFiles);
+    productFileReadSeqRef.current += 1;
+    const readSeq = productFileReadSeqRef.current;
+    const file = nextFiles[0];
+
+    if (!file) {
+      setProductImageUrl("");
+      setLatestImage("");
+      runner.reset();
+      return;
+    }
+
+    void fileToDataUrl(file)
+      .then((url) => {
+        if (productFileReadSeqRef.current !== readSeq) return;
+        setProductImageUrl(url);
+        setLatestImage("");
+        runner.setOriginalVersion({
+          url,
+          title: file.name || "原始图片",
+        });
+      })
+      .catch(() => {
+        if (productFileReadSeqRef.current !== readSeq) return;
+        setProductImageUrl("");
+        setLatestImage("");
+        runner.reset();
+        toast.error("图片读取失败，请重新选择图片。");
+      });
+  }, [runner.reset, runner.setOriginalVersion]);
 
   useEffect(() => {
     if (!open || initialProductImage?.url) return;
@@ -740,21 +848,20 @@ export function ProductSceneDrawer({
       .catch(() => {
         toast.error("生成记录图片带入失败，请重新选择图片。");
       });
+    setProductImageUrl(initialProductImage.url);
+    runner.setOriginalVersion(initialProductImage);
     return () => {
       disposed = true;
     };
-  }, [initialProductImage, initialSeed, open, runner.reset]);
+  }, [initialProductImage, initialSeed, open, runner.reset, runner.setOriginalVersion]);
 
   const submit = async (mode: RunMode) => {
-    if (!productFiles[0]) {
+    if (!productImageUrl) {
       toast.error("请先上传一张产品图。");
       return;
     }
-    const [productImage, sceneImages] = await Promise.all([
-      fileToDataUrl(productFiles[0]),
-      filesToDataUrls(sceneFiles),
-    ]);
-    await runner.run(mode, { productImage, sceneImages, prompt });
+    const sceneImages = await filesToDataUrls(sceneFiles);
+    await runner.run(mode, { productImage: productImageUrl, sceneImages, prompt });
   };
 
   return (
@@ -789,7 +896,7 @@ export function ProductSceneDrawer({
           <ImageUploadDropzone
             id="toolbox-product-scene-product"
             files={productFiles}
-            onFilesChange={setProductFiles}
+            onFilesChange={handleProductFilesChange}
             acceptPagePaste
             title="上传产品图"
             description="AI 会识别产品主体，并尽量保持产品形态、材质、颜色和细节。"

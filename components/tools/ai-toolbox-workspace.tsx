@@ -59,6 +59,7 @@ type StandaloneVersion = {
   recordId?: string | null;
   createdAt: string;
   isActive: boolean;
+  isOriginal?: boolean;
 };
 
 type ToolboxRecord = {
@@ -206,6 +207,20 @@ export function AiToolboxWorkspace() {
     }
   };
 
+  const setStandaloneOriginalVersion = (image: { title: string; imageUrl: string }) => {
+    setStandaloneVersions([
+      {
+        id: "original",
+        versionNumber: 0,
+        imageUrl: image.imageUrl,
+        title: "原始图片",
+        createdAt: new Date().toISOString(),
+        isActive: true,
+        isOriginal: true,
+      },
+    ]);
+  };
+
   const handleLocalRepaintOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
       resetStandaloneLocalRepaint();
@@ -253,13 +268,12 @@ export function AiToolboxWorkspace() {
       minute: "2-digit",
     });
 
-  const openRecordImagePreview = (record: ToolboxRecord) => {
-    const imageUrl = record.outputImageUrl ?? record.inputImageUrl;
+  const openRecordImagePreview = (record: ToolboxRecord, imageUrl: string | null | undefined, label: string) => {
     if (!imageUrl) return;
 
     openImagePreview({
       url: imageUrl,
-      title: `${toolboxToolTypeLabels[record.toolType] ?? record.toolType}生成记录`,
+      title: `${toolboxToolTypeLabels[record.toolType] ?? record.toolType}${label}`,
       meta: `${record.model ?? "未知模型"} · ${formatRecordTime(record.createdAt)}`,
     });
   };
@@ -277,7 +291,7 @@ export function AiToolboxWorkspace() {
 
     if (record.toolType === "LOCAL_REPAINT") {
       setStandaloneBaseImage({ title, imageUrl });
-      setStandaloneVersions([]);
+      setStandaloneOriginalVersion({ title, imageUrl });
       setLocalRepaintOpen(true);
       toast.success("已带入图片，可以继续局部重绘");
       return;
@@ -383,7 +397,10 @@ export function AiToolboxWorkspace() {
         title: file.name,
         imageUrl: `data:${payload.mimeType};base64,${payload.base64Data}`,
       });
-      setStandaloneVersions([]);
+      setStandaloneOriginalVersion({
+        title: file.name,
+        imageUrl: `data:${payload.mimeType};base64,${payload.base64Data}`,
+      });
       toast.success("已选择待局部重绘图片");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "图片读取失败");
@@ -426,26 +443,28 @@ export function AiToolboxWorkspace() {
     recordId?: string | null;
     updatedAt?: string;
   }) => {
-    const nextVersionNumber = standaloneVersions.length + 1;
     const createdAt = result.updatedAt ?? new Date().toISOString();
-    const title = `局部重绘 v${nextVersionNumber}`;
-    setStandaloneBaseImage({
-      title,
-      imageUrl: result.imageUrl,
-    });
-    setStandaloneVersions((current) => [
-      {
-        id: result.recordId ?? `${Date.now()}-${nextVersionNumber}`,
-        versionNumber: nextVersionNumber,
-        imageUrl: result.imageUrl,
+    setStandaloneVersions((current) => {
+      const nextVersionNumber = current.filter((version) => !version.isOriginal).length + 1;
+      const title = `局部重绘 v${nextVersionNumber}`;
+      setStandaloneBaseImage({
         title,
-        model: result.model,
-        recordId: result.recordId,
-        createdAt,
-        isActive: true,
-      },
-      ...current.map((version) => ({ ...version, isActive: false })),
-    ]);
+        imageUrl: result.imageUrl,
+      });
+      return [
+        {
+          id: result.recordId ?? `${Date.now()}-${nextVersionNumber}`,
+          versionNumber: nextVersionNumber,
+          imageUrl: result.imageUrl,
+          title,
+          model: result.model,
+          recordId: result.recordId,
+          createdAt,
+          isActive: true,
+        },
+        ...current.map((version) => ({ ...version, isActive: false })),
+      ];
+    });
   };
 
   const activateStandaloneVersion = (versionId: string) => {
@@ -625,9 +644,11 @@ export function AiToolboxWorkspace() {
             <div key={version.id} className="rounded-xl border border-border bg-background/70 p-2.5">
               <div className="grid grid-cols-[minmax(0,1fr)_48px_auto] items-center gap-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-medium">v{version.versionNumber}</p>
+                  <p className="text-sm font-medium">
+                    {version.isOriginal ? "原始图片" : `v${version.versionNumber}`}
+                  </p>
                   <p className="truncate text-xs text-muted-foreground">
-                    {version.model ? `模型：${version.model}` : "独立工具生成"}
+                    {version.isOriginal ? "原始图片" : version.model ? `模型：${version.model}` : "独立工具生成"}
                   </p>
                 </div>
                 <div className="h-12 w-12 overflow-hidden rounded-xl border border-border bg-muted">
@@ -849,8 +870,9 @@ export function AiToolboxWorkspace() {
           </div>
         ) : (
           <div className="overflow-hidden rounded-2xl border border-border bg-card">
-            <div className="hidden grid-cols-[92px_112px_140px_minmax(0,1fr)_150px_96px] gap-3 border-b border-border bg-muted/40 px-4 py-3 text-xs font-medium text-muted-foreground md:grid">
-              <span>图片</span>
+            <div className="hidden grid-cols-[92px_92px_112px_140px_minmax(0,1fr)_150px_96px] gap-3 border-b border-border bg-muted/40 px-4 py-3 text-xs font-medium text-muted-foreground md:grid">
+              <span>原图</span>
+              <span>结果图</span>
               <span>类型</span>
               <span>生成模型</span>
               <span>Prompt</span>
@@ -860,19 +882,41 @@ export function AiToolboxWorkspace() {
             {toolboxRecords.map((record) => (
               <div
                 key={record.id}
-                className="grid grid-cols-1 gap-3 border-b border-border px-4 py-3 last:border-b-0 md:grid-cols-[92px_112px_140px_minmax(0,1fr)_150px_96px]"
+                className="grid grid-cols-1 gap-3 border-b border-border px-4 py-3 last:border-b-0 md:grid-cols-[92px_92px_112px_140px_minmax(0,1fr)_150px_96px]"
               >
                 <div>
-                  {record.outputImageUrl || record.inputImageUrl ? (
+                  <p className="mb-1 text-xs text-muted-foreground md:hidden">原图</p>
+                  {record.inputImageUrl ? (
                     <button
                       type="button"
                       className="group h-[68px] w-[92px] overflow-hidden rounded-xl border border-border bg-muted transition-colors hover:border-teal-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
-                      onClick={() => openRecordImagePreview(record)}
-                      title="点击查看大图"
+                      onClick={() => openRecordImagePreview(record, record.inputImageUrl, "原图")}
+                      title="查看原图"
                     >
                       <img
-                        src={record.outputImageUrl ?? record.inputImageUrl ?? ""}
-                        alt={toolboxToolTypeLabels[record.toolType] ?? record.toolType}
+                        src={record.inputImageUrl}
+                        alt={`${toolboxToolTypeLabels[record.toolType] ?? record.toolType}原图`}
+                        className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                      />
+                    </button>
+                  ) : (
+                    <div className="flex h-[68px] w-[92px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/40 text-xs text-muted-foreground">
+                      暂无图片
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <p className="mb-1 text-xs text-muted-foreground md:hidden">结果图</p>
+                  {record.outputImageUrl ? (
+                    <button
+                      type="button"
+                      className="group h-[68px] w-[92px] overflow-hidden rounded-xl border border-border bg-muted transition-colors hover:border-teal-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+                      onClick={() => openRecordImagePreview(record, record.outputImageUrl, "结果图")}
+                      title="查看结果图"
+                    >
+                      <img
+                        src={record.outputImageUrl}
+                        alt={`${toolboxToolTypeLabels[record.toolType] ?? record.toolType}结果图`}
                         className="h-full w-full object-cover transition-transform group-hover:scale-105"
                       />
                     </button>

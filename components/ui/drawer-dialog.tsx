@@ -133,7 +133,11 @@ export function DrawerDialog({
               <DialogPrimitive.Description className="mt-1 text-sm leading-6 text-slate-500 dark:text-slate-400">
                 {description}
               </DialogPrimitive.Description>
-            ) : null}
+            ) : (
+              <DialogPrimitive.Description className="sr-only">
+                抽屉弹窗内容
+              </DialogPrimitive.Description>
+            )}
           </div>
 
           <div className={cn("min-h-0 flex-1 overflow-y-auto px-6 py-5", contentClassName, bodyClassName)}>
