@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { ImageUploadDropzone } from "@/components/shared/image-upload-dropzone";
 import { Button } from "@/components/ui/button";
 import { DrawerDialog } from "@/components/ui/drawer-dialog";
+import { useImagePreview } from "@/components/shared/image-preview-provider";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
@@ -33,8 +34,9 @@ type ToolboxVersion = {
   title: string;
   imageUrl: string;
   model?: string;
-  createdAt: string;
+  createdAt: string | null;
   isActive: boolean;
+  isOriginal?: boolean;
 };
 
 type ExpandEdges = {
@@ -88,6 +90,8 @@ function VersionPanel({
   versions: ToolboxVersion[];
   onActivate: (version: ToolboxVersion) => void;
 }) {
+  const { openImagePreview } = useImagePreview();
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
@@ -108,12 +112,24 @@ function VersionPanel({
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{version.title}</p>
                   <p className="truncate text-xs text-muted-foreground">
-                    {version.model ? `模型：${version.model}` : "AI工具箱生成"}
+                    {version.model ? `模型：${version.model}` : `${version.isOriginal ? "原始图片" : "AI工具箱生成"}`}
                   </p>
                 </div>
-                <div className="h-12 w-12 overflow-hidden rounded-xl border border-border bg-muted">
+                <button
+                  type="button"
+                  className="h-12 w-12 overflow-hidden rounded-xl border border-border bg-muted cursor-zoom-in transition-opacity hover:opacity-80"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openImagePreview({
+                      url: version.imageUrl,
+                      title: version.title,
+                      meta: version.model ? `模型：${version.model}` : undefined,
+                    });
+                  }}
+                  aria-label={`预览：${version.title}`}
+                >
                   <img src={version.imageUrl} alt={version.title} className="h-full w-full object-cover" />
-                </div>
+                </button>
                 {version.isActive ? (
                   <span className="rounded-full bg-emerald-500 px-2 py-1 text-xs text-white">当前</span>
                 ) : (
@@ -145,7 +161,8 @@ function useToolboxRunner({
 
   const applyResult = useCallback((result: ToolboxResult) => {
     if (!result.imageUrl) return;
-    const nextNumber = versions.length + 1;
+    const generatedCount = versions.filter((v) => !v.isOriginal).length;
+    const nextNumber = generatedCount + 1;
     const version: ToolboxVersion = {
       id: result.recordId ?? `${Date.now()}-${nextNumber}`,
       title: `${resultTitlePrefix} v${nextNumber}`,
@@ -156,7 +173,7 @@ function useToolboxRunner({
     };
     setVersions((current) => [version, ...current.map((item) => ({ ...item, isActive: false }))]);
     onResultImage?.(result.imageUrl);
-  }, [onResultImage, resultTitlePrefix, versions.length]);
+  }, [onResultImage, resultTitlePrefix, versions]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -236,12 +253,17 @@ function useToolboxRunner({
     setVersions([]);
   }, []);
 
+  const deactivateAllVersions = useCallback(() => {
+    setVersions((current) => current.map((item) => ({ ...item, isActive: false })));
+  }, []);
+
   return {
     runningMode,
     backgroundRunning: Boolean(taskId) || runningMode === "background",
     versions,
     run,
     activateVersion,
+    deactivateAllVersions,
     reset,
   };
 }
@@ -513,7 +535,34 @@ export function SmartOutpaintDrawer({
             <Label className="text-xs text-muted-foreground">补充提示词（非必填）</Label>
             <Textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：向右扩展出更多咖啡吧台空间，保持暖色灯光和真实质感。" className="min-h-[140px]" />
           </div>
-          <VersionPanel versions={runner.versions} onActivate={runner.activateVersion} />
+          <VersionPanel
+            versions={
+              initialImage?.url
+                ? [
+                    ...(runner.versions.some((v) => v.id === "original")
+                      ? []
+                      : [{
+                          id: "original",
+                          title: "原始图片",
+                          imageUrl: initialImage.url,
+                          createdAt: null,
+                          isActive: runner.versions.every((v) => !v.isActive),
+                          isOriginal: true,
+                        } as ToolboxVersion]),
+                    ...runner.versions,
+                  ]
+                : runner.versions
+            }
+            onActivate={(version) => {
+              if (version.isOriginal) {
+                runner.deactivateAllVersions();
+                setImageUrl(initialImage!.url);
+                toast.success("已恢复为原始图片");
+                return;
+              }
+              runner.activateVersion(version);
+            }}
+          />
         </div>
       </div>
     </DrawerDialog>

@@ -21,6 +21,7 @@ import {
 
 const systemProjectPlatform = "__turing_system_task__";
 const outpaintMaxCanvasSide = 2048;
+const FEATHER_RADIUS = 24;
 
 function resolveTaskType(preferred: string, fallback: string) {
   const inlineSchema = (prisma as typeof prisma & { _engineConfig?: { inlineSchema?: string } })._engineConfig?.inlineSchema;
@@ -92,6 +93,16 @@ export type ToolboxLocalRepaintInstructionInput = {
 const inpaintInstructionSchema = z.object({
   instruction: z.string().min(2).max(1200),
 });
+
+const edgeAnalysisSchema = z.object({
+  top: z.string().optional().nullable().describe("What objects, colors, textures, structures are cut off at the top edge"),
+  right: z.string().optional().nullable().describe("What objects, colors, textures, structures are cut off at the right edge"),
+  bottom: z.string().optional().nullable().describe("What objects, colors, textures, structures are cut off at the bottom edge"),
+  left: z.string().optional().nullable().describe("What objects, colors, textures, structures are cut off at the left edge"),
+  overallScene: z.string().describe("Brief description of the overall scene, subject, and lighting"),
+  humanGuidance: z.string().optional().nullable().describe("If human body parts are visible, describe which parts and how they should naturally extend"),
+});
+type EdgeAnalysis = z.infer<typeof edgeAnalysisSchema>;
 
 function unique(values: Array<string | null | undefined>) {
   return values.filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
@@ -236,6 +247,12 @@ function summarizeOutpaintFailure(error: unknown) {
   if (/timed out|aborterror|network error|fetch failed|gateway-timeout|gateway time-out|504/i.test(detail)) {
     return "当前 Provider 请求超时或网络异常，请稍后重试。";
   }
+  if (/bad_response_status_code|openai_error|422/i.test(detail)) {
+    return `当前 Provider 的图片编辑通道没有正确支持 multipart mask 扩图请求。智能扩图需要 /images/edits 同时接收 image 和 mask；请更换支持该能力的 Provider，或让当前 Provider 修复 gpt-image 系列图片编辑通道。原因摘要：${detail}`;
+  }
+  if (/model_not_found|No available channel/i.test(detail)) {
+    return `当前 Provider 没有为候选图片编辑模型开放可用通道。请在 Provider 后台开通真实图片编辑能力，或切换到支持 /images/edits + mask 的模型。原因摘要：${detail}`;
+  }
   return `当前 Provider 没有可用的真实扩图能力，或不支持 multipart mask 图片编辑。智能扩图不会使用普通生成兜底，以避免裁剪原图。原因摘要：${detail}`;
 }
 
@@ -350,11 +367,49 @@ async function prepareOutpaintEditAssets(input: ToolboxOutpaintInput) {
   };
 }
 
-async function finalizeOutpaintResult(result: ImageGenerationResult, assets: Awaited<ReturnType<typeof prepareOutpaintEditAssets>>) {
+async function createFeatherMask(width: number, height: number, featherRadius: number): Promise<Buffer> {
+  const r = Math.max(1, Math.round(featherRadius));
+  const shrink = r * 2;
+  const innerW = Math.max(4, width - shrink * 2);
+  const innerH = Math.max(4, height - shrink * 2);
+
+  const inner = await sharp({
+    create: { width: innerW, height: innerH, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } },
+  }).png().toBuffer();
+
+  const canvas = await sharp({
+    create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  })
+    .composite([{ input: inner, left: shrink, top: shrink }])
+    .png()
+    .toBuffer();
+
+  return sharp(canvas).blur(r).png().toBuffer();
+}
+
+async function finalizeOutpaintResult(
+  result: ImageGenerationResult,
+  assets: Awaited<ReturnType<typeof prepareOutpaintEditAssets>>,
+  featherRadius: number = FEATHER_RADIUS,
+) {
   const resultBuffer = await imageResultToBuffer(result);
-  return sharp(resultBuffer)
-    .resize(assets.target.width, assets.target.height, { fit: "fill" })
-    .composite([{ input: assets.sourcePng, left: assets.offset.left, top: assets.offset.top }])
+  const resolved = sharp(resultBuffer).resize(assets.target.width, assets.target.height, { fit: "fill" });
+
+  if (featherRadius <= 0) {
+    return resolved
+      .composite([{ input: assets.sourcePng, left: assets.offset.left, top: assets.offset.top }])
+      .png()
+      .toBuffer();
+  }
+
+  const mask = await createFeatherMask(assets.source.width, assets.source.height, featherRadius);
+  const featheredSource = await sharp(assets.sourcePng)
+    .composite([{ input: mask, blend: "dest-in" }])
+    .png()
+    .toBuffer();
+
+  return resolved
+    .composite([{ input: featheredSource, left: assets.offset.left, top: assets.offset.top }])
     .png()
     .toBuffer();
 }
@@ -459,6 +514,64 @@ async function runImageGenerationModel(input: {
   throw new Error(models.length === 0 ? "当前没有可用的图片生成模型。" : `所有可用图片模型都生成失败：${errors.join(" | ")}`);
 }
 
+async function analyzeOutpaintEdges(
+  sourceImageBuffer: Buffer,
+  expand: { top: number; right: number; bottom: number; left: number },
+): Promise<EdgeAnalysis | null> {
+  try {
+    const { provider, adapter } = await getProviderAdapter();
+    const models = getVisionTextModels(provider);
+    const model = models[0] ?? null;
+    if (!model) return null;
+
+    const expandingEdges = [
+      expand.top > 0 ? "top" : null,
+      expand.right > 0 ? "right" : null,
+      expand.bottom > 0 ? "bottom" : null,
+      expand.left > 0 ? "left" : null,
+    ].filter(Boolean) as string[];
+
+    if (expandingEdges.length === 0) return null;
+
+    const analysisImage = await sharp(sourceImageBuffer)
+      .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
+      .png()
+      .toBuffer();
+
+    const userPrompt = [
+      "You are an image analysis assistant. The user wants to expand this image outward.",
+      "Edges to expand: " + expandingEdges.join(", ") + ".",
+      "",
+      "=== INSTRUCTIONS ===",
+      "For each edge that needs expansion, carefully observe what is visible right at that boundary:",
+      "1. What objects, structures, or elements are partially cut off at each edge? How should they continue?",
+      "2. What colors, gradients, lighting direction, and color temperature exist at each edge?",
+      "3. What textures and patterns (floor, wall, fabric, sky, water, etc.) are at each edge? How should they repeat/extend?",
+      "4. Are there perspective guides, horizon lines, shadows, or reflections at the edges? Describe their direction and intensity.",
+      "5. overallScene: Describe the overall scene, subject, and lighting conditions briefly.",
+      "6. humanGuidance: If human body parts (hands, arms, legs, head, body) are visible, describe exactly which parts are present, their pose, and how they should naturally extend beyond the edges. Emphasize anatomical correctness.",
+      "",
+      "Only describe edges that are being expanded. Skip edges with no expansion.",
+      "Be specific and actionable — the description will be passed directly to an image generation model.",
+      "Return ONLY JSON.",
+    ].join("\n");
+
+    const result = await adapter.generateStructured({
+      model,
+      systemPrompt: "Return strict JSON only. No markdown.",
+      userPrompt,
+      schema: edgeAnalysisSchema,
+      images: [bufferToPngDataUrl(analysisImage)],
+      timeoutMs: 30000,
+      monitor: { operation: "toolbox_outpaint_edge_analysis" },
+    });
+
+    return result.parsed;
+  } catch {
+    return null;
+  }
+}
+
 async function runOutpaintEditModel(input: ToolboxOutpaintInput): Promise<ToolboxGenerationResult & {
   outputImagePath: string;
   prompt: string;
@@ -466,8 +579,9 @@ async function runOutpaintEditModel(input: ToolboxOutpaintInput): Promise<Toolbo
 }> {
   const { provider, adapter } = await getProviderAdapter();
   const models = getImageEditModels(provider);
-  const prompt = buildOutpaintPrompt(input);
   const assets = await prepareOutpaintEditAssets(input);
+  const edgeAnalysis = await analyzeOutpaintEdges(assets.sourcePng, assets.expand);
+  const prompt = buildOutpaintPrompt(input, edgeAnalysis);
   const errors: string[] = [];
 
   for (const model of models) {
@@ -520,23 +634,92 @@ function normalizePercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function buildOutpaintPrompt(input: ToolboxOutpaintInput) {
+function buildOutpaintPrompt(input: ToolboxOutpaintInput, edgeAnalysis?: EdgeAnalysis | null) {
   const expand = {
     top: normalizePercent(input.expand.top),
     right: normalizePercent(input.expand.right),
     bottom: normalizePercent(input.expand.bottom),
     left: normalizePercent(input.expand.left),
   };
-  return [
-    "Outpaint the uploaded expanded canvas image.",
-    "The uploaded image already contains the original image pasted into a larger transparent canvas. A mask image is attached.",
-    "Only the transparent masked extension areas may be generated. The opaque original image region is protected and must not be changed.",
-    `Canvas extension request: top ${expand.top}%, right ${expand.right}%, bottom ${expand.bottom}%, left ${expand.left}% relative to the original image size.`,
-    "Generate plausible continuation only in the newly extended areas. Continue background, lighting, perspective, texture, shadows, depth of field and scene context naturally from the original edges.",
-    "Do not crop, zoom, rotate, distort, reframe, redesign, or replace the original image region.",
-    input.prompt?.trim() ? `Additional user instruction: ${input.prompt.trim()}` : "",
-    "Return one natural expanded image with the full expanded canvas.",
-  ].filter(Boolean).join("\n");
+
+  const parts: string[] = [
+    "You are an expert outpainting assistant. Your task is to intelligently expand this image outward.",
+    "",
+    "=== SETUP ===",
+    "The uploaded image contains the original image centered on a larger transparent canvas. A binary mask defines which areas need filling (transparent = paint here, opaque = keep as-is).",
+    `Expansion requested: top ${expand.top}%, right ${expand.right}%, bottom ${expand.bottom}%, left ${expand.left}% relative to the original.`,
+    "",
+  ];
+
+  if (edgeAnalysis?.overallScene) {
+    parts.push(
+      "=== SCENE CONTEXT (pre-analyzed by AI vision) ===",
+      `Scene: ${edgeAnalysis.overallScene}`,
+    );
+  }
+
+  if (edgeAnalysis?.humanGuidance) {
+    parts.push(
+      "=== HUMAN ANATOMY GUIDANCE ===",
+      "This image contains human body parts. Follow these rules strictly:",
+      `${edgeAnalysis.humanGuidance}`,
+      "- Every finger must have exactly 3 joints and end with a clean, natural fingertip. Do not merge, twist, stretch, or multiply fingers.",
+      "- Count the fingers at each hand edge and generate exactly the same count continuing naturally.",
+      "- Hands must maintain natural human proportions, curvature, and skin tone matching the original.",
+      "- Never generate extra fingers, fused fingers, impossible poses, or distorted hand shapes.",
+      "- If an arm/hand is partially visible, continue the pose organically — do not break wrist joints or snap rotations.",
+    );
+  } else {
+    parts.push(
+      "=== HUMAN ANATOMY CAUTION ===",
+      "If any human body parts (hands, arms, feet, face) are visible in the original image, pay extreme attention:",
+      "- Fingers must each have 3 joints, natural curvature, and correct count — never fuse, twist, duplicate, or deform fingers.",
+      "- Hands must maintain proper human proportions and anatomical structure.",
+      "- Continue any visible limbs with natural pose continuation — no joint snapping or impossible angles.",
+    );
+  }
+
+  if (edgeAnalysis) {
+    const edgeParts: string[] = [];
+    if (expand.top > 0 && edgeAnalysis.top) edgeParts.push(`- TOP edge: ${edgeAnalysis.top}`);
+    if (expand.right > 0 && edgeAnalysis.right) edgeParts.push(`- RIGHT edge: ${edgeAnalysis.right}`);
+    if (expand.bottom > 0 && edgeAnalysis.bottom) edgeParts.push(`- BOTTOM edge: ${edgeAnalysis.bottom}`);
+    if (expand.left > 0 && edgeAnalysis.left) edgeParts.push(`- LEFT edge: ${edgeAnalysis.left}`);
+    if (edgeParts.length > 0) {
+      parts.push(
+        "=== EDGE-BY-EDGE CONTENT TO EXTEND ===",
+        "The following was pre-analyzed by AI vision. Use this as authoritative guidance for what to generate at each edge:",
+        ...edgeParts,
+        "",
+      );
+    }
+  }
+
+  parts.push(
+    "=== CRITICAL: CONTENT-AWARE EDGE CONTINUATION ===",
+    "Your generated content MUST continue these elements seamlessly:",
+    "- Objects, products, or subjects that are partially cut off at an edge → extend their full shape",
+    "- Background gradients, colors, and lighting → continue the exact same gradient angle, color temperature, and falloff",
+    "- Textures and patterns (floor, wall, fabric, sky, water, etc.) → repeat/extend with the same scale and direction",
+    "- Structural lines, horizon lines, perspective guides → extend along the same geometric trajectory",
+    "- Shadows and reflections → continue with matching direction, softness, and density",
+    "- Depth of field → the extended area should have the same focal plane and blur characteristics",
+    "",
+    "=== EXECUTION RULES ===",
+    "1. First, observe each edge: what colors, objects, textures, and structures are present RIGHT AT the boundary.",
+    "2. Extend those exact elements outward — do not invent new elements unrelated to the edge content.",
+    "3. Match colors EXACTLY at the boundary — any color shift will be immediately visible as a seam.",
+    "4. Blend seamlessly: the transition from original to generated must be invisible.",
+    "5. Preserve the original image region 100% — do not alter, recolor, or blur the protected area.",
+    "6. Do not crop, zoom, rotate, distort, reframe, or redesign the original.",
+  );
+
+  if (input.prompt?.trim()) {
+    parts.push(`USER GUIDANCE: ${input.prompt.trim()}`);
+  }
+
+  parts.push("Return the full expanded canvas as a single natural image.");
+  return parts.join("\n");
 }
 
 function buildImageToImagePrompt(input: ToolboxImageToImageInput) {
