@@ -198,6 +198,23 @@ function waitForServer(url, timeoutMs = 30000) {
   });
 }
 
+function getDevServerUrl() {
+  const value = process.env.DESKTOP_DEV_SERVER_URL;
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
 async function startNextServer(runtime) {
   const serverEntry = getServerEntry();
   if (!fs.existsSync(serverEntry)) {
@@ -443,6 +460,21 @@ async function bootstrapDesktopApp() {
   console.time("desktop:total");
 
   createSplashWindow();
+
+  const devServerUrl = getDevServerUrl();
+  if (devServerUrl) {
+    serverUrl = devServerUrl;
+    updateSplashStatus("正在连接开发服务...");
+    await waitForServer(devServerUrl, 120000);
+
+    updateSplashStatus("正在加载开发界面...");
+    console.time("desktop:window");
+    await createMainWindow(devServerUrl);
+    console.timeEnd("desktop:window");
+    console.timeEnd("desktop:total");
+    return;
+  }
+
   updateSplashStatus("正在准备本地运行环境...");
   console.time("desktop:runtime");
   const runtime = await ensureDesktopRuntimeConfig();

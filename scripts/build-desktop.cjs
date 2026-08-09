@@ -3,6 +3,7 @@ const fsp = require("fs/promises");
 const path = require("path");
 const { spawn } = require("child_process");
 
+const { resolveElectronBinary } = require("./electron-binary.cjs");
 const { ensureSafeWorkdir } = require("./safe-workdir.cjs");
 
 const projectRoot = path.resolve(__dirname, "..");
@@ -125,7 +126,7 @@ async function prepareDesktopBuild() {
 
 async function startDesktopApp() {
   await prepareDesktopBuild();
-  const electronBinary = require("electron");
+  const electronBinary = resolveElectronBinary({ projectRoot, repair: true });
   const desktopEnv = { ...process.env };
   delete desktopEnv.ELECTRON_RUN_AS_NODE;
   await runCommand(electronBinary, [projectRoot], {

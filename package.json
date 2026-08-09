@@ -9,6 +9,7 @@
     "dev": "node ./scripts/run-next-safe.cjs dev",
     "build": "npm run prisma:generate && node ./scripts/run-next-safe.cjs build",
     "start": "node ./scripts/run-next-safe.cjs start",
+    "desktop:dev": "node ./scripts/desktop-dev.cjs",
     "desktop:start": "node ./scripts/build-desktop.cjs start",
     "build:desktop": "node ./scripts/build-desktop.cjs prepare",
     "dist:mac": "npm run build:desktop && electron-builder --mac dmg zip --arm64",
