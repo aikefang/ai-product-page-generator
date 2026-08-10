@@ -1,11 +1,18 @@
 import { PrismaClient } from "@prisma/client";
 
+import { env } from "@/lib/utils/env";
+
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
 };
 
 function createPrismaClient() {
   return new PrismaClient({
+    datasources: {
+      db: {
+        url: env.DATABASE_URL,
+      },
+    },
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
 }
